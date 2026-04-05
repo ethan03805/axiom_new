@@ -33,6 +33,9 @@ axiom/
 │   │   └── containers.go   # Container session tracking
 │   ├── version/            # Build-time version injection
 │   │
+│   ├── gitops/             # Git operations manager (Phase 4)
+│   │   └── gitops.go       # Manager, CommitInfo, FormatCommitMessage, branch/diff/snapshot/cleanup
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
@@ -42,7 +45,6 @@ axiom/
 │   ├── container/          # Docker container lifecycle management
 │   ├── doctor/             # System health checks
 │   ├── eco/                # Engineering Change Order management
-│   ├── gitops/             # Git operations (branch, commit, diff, snapshot)
 │   ├── index/              # Semantic indexer (tree-sitter)
 │   ├── inference/          # Inference broker and provider routing
 │   ├── ipc/                # Filesystem IPC for container communication
@@ -180,12 +182,14 @@ Current test coverage by package:
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
 | `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
 | `internal/engine` | 28 | Engine lifecycle (8), run lifecycle (8), status projections (5), worker pool (5), service interface wiring (2) |
+| `internal/gitops` | 38 | Branch management (8), snapshots (2), dirty/clean checks (6), commit formatting (3), add/commit (4), diffs (6), setup work branch (3), cancel cleanup (3), exit criteria (2), architecture compliance (1) |
 
 ### Test Patterns
 
 - Tests use `t.TempDir()` for isolated filesystem operations
 - Database tests create fresh SQLite databases per test
 - Engine tests use noop service implementations for testability without Docker or network
+- Gitops tests create real temporary git repositories with initial commits for integration testing
 - No external service dependencies in current tests
 
 ## Architecture Constraints
@@ -199,6 +203,7 @@ The following rules from ARCHITECTURE.md govern all implementation:
 5. **Network isolation** — containers have no network access (`network_mode = "none"`)
 6. **No direct project mount** — containers never see the project filesystem
 7. **View-model clients** — TUI and API consume engine-authored events, never read SQLite directly
+8. **No remote git operations** — Axiom never pushes, pulls, or merges to/from remote repositories automatically
 
 See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 
@@ -210,7 +215,30 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 1 | Project Bootstrap, Config, and Filesystem Contracts | Complete |
 | 2 | SQLite State Store and Core Domain Services | Complete |
 | 3 | Engine Kernel and Event Infrastructure | Complete |
-| 4-20 | Remaining phases | Not started |
+| 4 | Git Operations and Workspace Safety | Complete |
+| 5-20 | Remaining phases | Not started |
+
+### Phase 4 Summary
+
+Phase 4 implemented deterministic, architecture-compliant git operations in the `internal/gitops/` package:
+
+- **Git Manager** (`internal/gitops/gitops.go`) — `Manager` struct wrapping all git operations through `exec.Command`. The Manager satisfies the existing `engine.GitService` interface and provides additional methods for the full Phase 4 scope.
+
+- **Branch management** — `CreateBranch`, `CreateAndCheckoutBranch`, `CheckoutBranch`, `BranchExists`, `CurrentBranch`. Work branches follow the `axiom/<project-slug>` naming convention (Architecture Section 23.1). `SetupWorkBranch` handles both new run creation (creates branch from base HEAD) and resume (checks out existing branch), with dirty-tree validation before any operation.
+
+- **Snapshot helpers** — `CurrentHEAD` returns the full 40-character SHA. `Snapshot` is the canonical method for capturing `base_snapshot` values stored in `task_attempts` (Architecture Section 16.2).
+
+- **Working-copy validation** — `IsDirty` detects untracked files, staged changes, and modified tracked files. `ValidateClean` returns an actionable error if the working tree is not clean, enforcing the architecture requirement that the engine refuses to start on a dirty tree (Section 28.2).
+
+- **Commit formatting** — `FormatCommitMessage` builds the exact commit message template from Architecture Section 23.2 with all required metadata fields (task title, task ID, SRS refs, Meeseeks model, reviewer model, attempt number, cost, base snapshot). `CommitTask` stages files and commits in one operation.
+
+- **Diff helpers** — `Diff` (between two refs), `DiffStaged` (staged changes), `DiffWorkBranch` (three-dot diff for work branch review). These support task output review, merge previews, and final branch review (Architecture Section 23.4).
+
+- **Cancel cleanup** — `CancelCleanup` reverts all uncommitted engine-applied changes (`git reset --hard HEAD` + `git clean -fd`) and switches back to the base branch. Committed work on the work branch is preserved for user review.
+
+- **No remote operations** — The Manager has zero push, pull, fetch, or remote-related methods, enforcing Architecture Section 23.4: "Axiom SHALL NOT automatically merge or push to remote repositories."
+
+See [Git Operations Reference](git-operations.md) for the full API.
 
 ### Phase 3 Summary
 

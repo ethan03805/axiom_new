@@ -106,6 +106,22 @@ Axiom automatically manages `.gitignore` entries inside `.axiom/`:
 | `.axiom/validation/` | Gitignored | Ephemeral sandbox data |
 | `.axiom/logs/` | Gitignored | Runtime logs |
 
+## Git Branch Strategy
+
+When a run starts, Axiom creates a dedicated work branch:
+
+```
+axiom/<project-slug>
+```
+
+All task commits are made to this branch. Your current branch is never modified during execution. When the run completes, you review the full diff and merge at your discretion. Axiom never pushes or merges to remote automatically.
+
+The work branch is deterministic — given the same project slug, the branch name is always the same. If a run is resumed after a pause or crash, Axiom detects the existing branch and checks it out.
+
+**Important:** Axiom requires a clean working tree before starting a run. Commit or stash any uncommitted changes first.
+
+See [Git Operations Reference](git-operations.md) for implementation details.
+
 ## What's Next
 
 The following features are implemented in later phases:
