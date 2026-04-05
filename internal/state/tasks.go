@@ -70,7 +70,7 @@ func (d *DB) UpdateTaskStatus(id string, to TaskStatus) error {
 
 		var timestampClause string
 		switch to {
-		case TaskCompleted, TaskFailed, TaskBlocked, TaskCancelledECO:
+		case TaskDone, TaskFailed, TaskBlocked, TaskCancelledECO:
 			timestampClause = ", completed_at = CURRENT_TIMESTAMP"
 		}
 

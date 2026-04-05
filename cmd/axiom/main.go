@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,10 +122,60 @@ func statusCmd() *cobra.Command {
 			}
 			defer application.Close()
 
-			fmt.Printf("Axiom project: %s\n", application.Config.Project.Name)
+			// Find or create project record
+			proj, err := application.DB.GetProjectByRootPath(application.ProjectRoot)
+			if err != nil {
+				if errors.Is(err, state.ErrNotFound) {
+					fmt.Printf("Axiom project: %s\n", application.Config.Project.Name)
+					fmt.Printf("  Root:   %s\n", application.ProjectRoot)
+					fmt.Printf("  Status: no project record (run 'axiom init' first)\n")
+					return nil
+				}
+				return err
+			}
+
+			status, err := application.Engine.GetRunStatus(proj.ID)
+			if err != nil {
+				return fmt.Errorf("getting status: %w", err)
+			}
+
+			fmt.Printf("Axiom project: %s\n", status.ProjectName)
 			fmt.Printf("  Root:   %s\n", application.ProjectRoot)
-			fmt.Printf("  Budget: $%.2f\n", application.Config.Budget.MaxUSD)
-			fmt.Printf("  Status: idle\n")
+
+			if status.Run == nil {
+				fmt.Printf("  Status: idle (no active run)\n")
+				fmt.Printf("  Budget: $%.2f (configured maximum)\n", application.Config.Budget.MaxUSD)
+			} else {
+				fmt.Printf("  Run:    %s\n", status.Run.ID)
+				fmt.Printf("  Status: %s\n", status.Run.Status)
+				fmt.Printf("  Branch: %s\n", status.Run.WorkBranch)
+				fmt.Printf("  Budget: $%.2f / $%.2f",
+					status.Budget.SpentUSD, status.Budget.MaxUSD)
+				if status.Budget.WarnReached {
+					fmt.Printf(" [WARNING: %d%% threshold reached]", status.Budget.WarnPercent)
+				}
+				fmt.Println()
+
+				if status.Tasks.Total > 0 {
+					fmt.Printf("  Tasks:  %d total", status.Tasks.Total)
+					if status.Tasks.Done > 0 {
+						fmt.Printf(", %d done", status.Tasks.Done)
+					}
+					if status.Tasks.InProgress > 0 {
+						fmt.Printf(", %d running", status.Tasks.InProgress)
+					}
+					if status.Tasks.Queued > 0 {
+						fmt.Printf(", %d queued", status.Tasks.Queued)
+					}
+					if status.Tasks.Failed > 0 {
+						fmt.Printf(", %d failed", status.Tasks.Failed)
+					}
+					if status.Tasks.Blocked > 0 {
+						fmt.Printf(", %d blocked", status.Tasks.Blocked)
+					}
+					fmt.Println()
+				}
+			}
 			return nil
 		},
 	}

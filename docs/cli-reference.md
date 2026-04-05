@@ -66,14 +66,49 @@ axiom status [flags]
 
 **Requires:** An initialized Axiom project (searches current directory and parents for `.axiom/`).
 
-**Example:**
+**Output:** The status command uses the engine's status projection system (Phase 3) to display run state, task summary, and budget information.
+
+**Example (no active run):**
 ```bash
 $ axiom status
 Axiom project: my-app
   Root:   /home/user/my-app
-  Budget: $10.00
-  Status: idle
+  Status: idle (no active run)
+  Budget: $10.00 (configured maximum)
 ```
+
+**Example (active run):**
+```bash
+$ axiom status
+Axiom project: my-app
+  Root:   /home/user/my-app
+  Run:    a1b2c3d4-...
+  Status: active
+  Branch: axiom/my-app
+  Budget: $3.50 / $10.00
+  Tasks:  12 total, 5 done, 2 running, 4 queued, 1 failed
+```
+
+**Example (budget warning):**
+```bash
+$ axiom status
+Axiom project: my-app
+  ...
+  Budget: $8.50 / $10.00 [WARNING: 80% threshold reached]
+```
+
+## Engine Run Lifecycle (Phase 3)
+
+The engine provides run lifecycle methods that enforce state machine transitions and emit events. These are available programmatically through the engine API and will be wired to CLI commands in Phase 14:
+
+| Operation | State Transition | Event Emitted |
+|-----------|-----------------|---------------|
+| Create run | (new) -> `draft_srs` | `run_created` |
+| Pause run | `active` -> `paused` | `run_paused` |
+| Resume run | `paused` -> `active` | `run_resumed` |
+| Cancel run | `active`/`paused` -> `cancelled` | `run_cancelled` |
+| Complete run | `active` -> `completed` | `run_completed` |
+| Fail run | `active` -> `error` | `run_error` |
 
 ## Planned Commands (Not Yet Implemented)
 
@@ -84,9 +119,9 @@ These commands are defined in the architecture and will be implemented in later 
 |---------|-------|-------------|
 | `axiom run "<prompt>"` | 9 | Start a new project run |
 | `axiom run --budget <usd> "<prompt>"` | 9 | Start with specific budget |
-| `axiom pause` | 3 | Pause execution |
-| `axiom resume` | 3 | Resume paused execution |
-| `axiom cancel` | 3 | Cancel execution |
+| `axiom pause` | 14 | Pause execution (engine method available since Phase 3) |
+| `axiom resume` | 14 | Resume paused execution (engine method available since Phase 3) |
+| `axiom cancel` | 14 | Cancel execution (engine method available since Phase 3) |
 | `axiom export` | 14 | Export project state as JSON |
 
 ### Interactive Session Commands

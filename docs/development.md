@@ -8,8 +8,17 @@ axiom/
 │   └── axiom/              # CLI entrypoint
 │       └── main.go         # Cobra command definitions
 ├── internal/               # Private application packages
-│   ├── app/                # Composition root (wires config, state, services)
+│   ├── app/                # Composition root (wires config, state, engine)
 │   ├── config/             # TOML config loading, validation, layering
+│   ├── engine/             # Trusted engine runtime (Phase 3)
+│   │   ├── interfaces.go   # Service interfaces (GitService, ContainerService, InferenceService, IndexService)
+│   │   ├── engine.go       # Engine struct, constructor, Start/Stop lifecycle, emitEvent helper
+│   │   ├── run.go          # Run lifecycle (CreateRun, PauseRun, ResumeRun, CancelRun, CompleteRun, FailRun)
+│   │   ├── status.go       # Status projections (RunStatusProjection, TaskSummary, BudgetSummary)
+│   │   └── worker.go       # Background worker pool (register, start, stop periodic workers)
+│   ├── events/             # Central event bus (Phase 3)
+│   │   ├── types.go        # EventType constants (authoritative + view-model), EngineEvent struct
+│   │   └── bus.go          # Bus (Publish, Subscribe, Unsubscribe) with write serialization
 │   ├── project/            # Project init, discovery, filesystem contracts
 │   ├── state/              # SQLite state store — DB, migrations, domain models, repositories
 │   │   ├── migrations/     # Embedded SQL migration files
@@ -33,7 +42,6 @@ axiom/
 │   ├── container/          # Docker container lifecycle management
 │   ├── doctor/             # System health checks
 │   ├── eco/                # Engineering Change Order management
-│   ├── events/             # Event emitter and subscriptions
 │   ├── gitops/             # Git operations (branch, commit, diff, snapshot)
 │   ├── index/              # Semantic indexer (tree-sitter)
 │   ├── inference/          # Inference broker and provider routing
@@ -42,7 +50,7 @@ axiom/
 │   ├── mergequeue/         # Serialized merge queue
 │   ├── models/             # Model registry
 │   ├── orchestrator/       # Orchestrator lifecycle management
-│   ├��─ review/             # Review pipeline
+│   ├── review/             # Review pipeline
 │   ├── scheduler/          # Task scheduler and lock manager
 │   ├── security/           # Secret scanning, prompt safety, redaction
 │   ├── session/            # Session UX manager
@@ -68,6 +76,7 @@ axiom/
 | CLI framework | [cobra](https://github.com/spf13/cobra) | Standard Go CLI framework, subcommand support |
 | Config parsing | [go-toml/v2](https://github.com/pelletier/go-toml) | Architecture specifies TOML format |
 | SQLite driver | [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) | Pure Go, no CGo — builds on all platforms without C toolchain |
+| UUID generation | [google/uuid](https://github.com/google/uuid) | RFC 4122 UUIDs for run, task, and session IDs |
 | Logging | `log/slog` (stdlib) | Structured logging, Go 1.21+ standard library |
 | Testing | `testing` (stdlib) | Standard Go test framework |
 
@@ -169,12 +178,15 @@ Current test coverage by package:
 | `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
 | `internal/state` | 69 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
+| `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
+| `internal/engine` | 28 | Engine lifecycle (8), run lifecycle (8), status projections (5), worker pool (5), service interface wiring (2) |
 
 ### Test Patterns
 
 - Tests use `t.TempDir()` for isolated filesystem operations
 - Database tests create fresh SQLite databases per test
-- No external service dependencies (Docker, network) in current tests
+- Engine tests use noop service implementations for testability without Docker or network
+- No external service dependencies in current tests
 
 ## Architecture Constraints
 
@@ -197,15 +209,45 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 0 | Foundation and Repo Bootstrap | Complete |
 | 1 | Project Bootstrap, Config, and Filesystem Contracts | Complete |
 | 2 | SQLite State Store and Core Domain Services | Complete |
-| 3 | Engine Kernel and Event Infrastructure | Not started |
-| 4–20 | Remaining phases | Not started |
+| 3 | Engine Kernel and Event Infrastructure | Complete |
+| 4-20 | Remaining phases | Not started |
+
+### Phase 3 Summary
+
+Phase 3 built the trusted control plane that all command surfaces use:
+
+- **Event bus** (`internal/events/`) — Central event emitter with two categories of events:
+  - **Authoritative events** (20+ types: `run_created`, `task_started`, etc.) are persisted to the SQLite `events` table as the audit trail (Architecture Section 22.4).
+  - **View-model events** (8 types: `startup_summary`, `session_mode_changed`, `task_projection_updated`, etc.) are fanned out to in-memory subscribers but NOT persisted (Architecture Section 26.2.10).
+  - Subscriber fan-out supports optional filters, buffered channels, and concurrent-safe operation.
+  - SQLite writes are serialized via a dedicated write mutex to avoid SQLITE_BUSY under concurrent publishes.
+
+- **Service interfaces** (`internal/engine/interfaces.go`) — Abstractions for `GitService`, `ContainerService`, `InferenceService`, and `IndexService` so orchestration logic is testable without real Docker or network calls. Tests use noop implementations.
+
+- **Engine runtime** (`internal/engine/engine.go`) — Long-lived `Engine` struct that wires config, database, event bus, and service interfaces. Provides `Start()`/`Stop()` lifecycle, background worker pool, and accessor methods (`Bus()`, `DB()`, `Config()`, `RootDir()`). The `emitEvent()` helper logs errors from event persistence without blocking the calling operation.
+
+- **Run lifecycle** (`internal/engine/run.go`) — Six methods enforcing the run state machine:
+  - `CreateRun` — creates a run in `draft_srs` status with config snapshot, work branch derivation, and default budget from config
+  - `PauseRun`, `ResumeRun`, `CancelRun`, `CompleteRun`, `FailRun` — each validates the state transition (delegating to `state.UpdateRunStatus`) and emits the corresponding event
+
+- **Status projections** (`internal/engine/status.go`) — `GetRunStatus(projectID)` returns a `RunStatusProjection` containing:
+  - Project identity (name, slug, root dir)
+  - Active run (if any), including current status and branch
+  - `TaskSummary` — counts by status (queued, in_progress, done, failed, blocked, waiting_lock, cancelled_eco)
+  - `BudgetSummary` — max/spent/remaining with warning threshold from config
+
+- **Worker pool** (`internal/engine/worker.go`) — `WorkerPool` manages periodic background goroutines. Workers are registered with a name, function, and interval. The pool supports graceful shutdown via context cancellation. Future phases will register scheduler, merge queue, and cleanup workers.
+
+- **App integration** (`internal/app/app.go`) — Updated to create the engine on `Open()` and stop it on `Close()`.
+
+- **CLI update** (`cmd/axiom/main.go`) — `axiom status` now uses `engine.GetRunStatus()` for rich output including run state, task summary, and budget with warnings.
 
 ### Phase 2 Summary
 
 Phase 2 added the full domain service layer to the `state` package:
 
 - **Domain models** — 21 typed structs matching every table in the schema, plus typed status enums with `Valid*Transition()` functions
-- **Repository methods** ��� CRUD operations for all entities (projects, runs, tasks, attempts, validation/review runs, artifacts, sessions, events, costs, ECOs, containers)
+- **Repository methods** — CRUD operations for all entities (projects, runs, tasks, attempts, validation/review runs, artifacts, sessions, events, costs, ECOs, containers)
 - **Transactional helpers** — `WithTx` for atomic read-then-write patterns; used by all status transition methods
 - **Invariant enforcement** — status transitions are validated before SQL execution; invalid transitions return `ErrInvalidTransition`
 - **Lock management** — `AcquireLock` is transactional with `ErrLockConflict` detection; `ReleaseTaskLocks` for batch cleanup

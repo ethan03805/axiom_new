@@ -113,7 +113,7 @@ func TestUpdateTaskStatus_ValidTransitions(t *testing.T) {
 	}{
 		{TaskQueued, TaskInProgress},
 		{TaskQueued, TaskWaitingOnLock},
-		{TaskInProgress, TaskCompleted},
+		{TaskInProgress, TaskDone},
 		{TaskInProgress, TaskFailed},
 		{TaskWaitingOnLock, TaskInProgress},
 	}
@@ -149,9 +149,9 @@ func TestUpdateTaskStatus_InvalidTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := db.UpdateTaskStatus("tt-inv", TaskCompleted)
+	err := db.UpdateTaskStatus("tt-inv", TaskDone)
 	if err == nil {
-		t.Error("expected error for invalid transition queued → completed")
+		t.Error("expected error for invalid transition queued → done")
 	}
 }
 
@@ -168,7 +168,7 @@ func TestUpdateTaskStatus_SetsCompletedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := db.UpdateTaskStatus("tt-comp", TaskCompleted); err != nil {
+	if err := db.UpdateTaskStatus("tt-comp", TaskDone); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := db.GetTask("tt-comp")

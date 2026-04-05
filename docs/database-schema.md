@@ -74,7 +74,7 @@ Task tree nodes with status tracking.
 | `parent_id` | TEXT | FK → tasks | Parent task (for tree structure) |
 | `title` | TEXT | NOT NULL | Task title |
 | `description` | TEXT | | Detailed description |
-| `status` | TEXT | NOT NULL DEFAULT 'queued' | queued, in_progress, completed, failed, blocked, waiting_on_lock, cancelled_eco |
+| `status` | TEXT | NOT NULL DEFAULT 'queued' | queued, in_progress, done, failed, blocked, waiting_on_lock, cancelled_eco |
 | `tier` | TEXT | NOT NULL | local, cheap, standard, premium |
 | `task_type` | TEXT | NOT NULL DEFAULT 'implementation' | implementation, test, review |
 | `base_snapshot` | TEXT | | Git SHA this task was planned against |
@@ -345,7 +345,7 @@ Every table has a corresponding Go struct in `internal/state/models.go`. Typed s
 | Type | Values |
 |------|--------|
 | `RunStatus` | `draft_srs`, `awaiting_srs_approval`, `active`, `paused`, `cancelled`, `completed`, `error` |
-| `TaskStatus` | `queued`, `in_progress`, `waiting_on_lock`, `completed`, `failed`, `blocked`, `cancelled_eco` |
+| `TaskStatus` | `queued`, `in_progress`, `waiting_on_lock`, `done`, `failed`, `blocked`, `cancelled_eco` |
 | `AttemptStatus` | `running`, `passed`, `failed`, `escalated` |
 | `AttemptPhase` | `executing`, `validating`, `reviewing`, `awaiting_orchestrator_gate`, `queued_for_merge`, `merging`, `succeeded`, `failed`, `escalated` |
 | `ECOStatus` | `proposed`, `approved`, `rejected` |
@@ -370,7 +370,8 @@ paused → active | cancelled
 ```
 queued → in_progress | waiting_on_lock | cancelled_eco
 waiting_on_lock → in_progress | queued | cancelled_eco
-in_progress → completed | failed | blocked | cancelled_eco
+in_progress → done | failed | blocked | cancelled_eco
+failed → queued   (retry or escalation per Section 15.4)
 ```
 
 **Attempt transitions:** `running → passed | failed | escalated`

@@ -55,7 +55,7 @@ const (
 	TaskQueued        TaskStatus = "queued"
 	TaskInProgress    TaskStatus = "in_progress"
 	TaskWaitingOnLock TaskStatus = "waiting_on_lock"
-	TaskCompleted     TaskStatus = "completed"
+	TaskDone          TaskStatus = "done"
 	TaskFailed        TaskStatus = "failed"
 	TaskBlocked       TaskStatus = "blocked"
 	TaskCancelledECO  TaskStatus = "cancelled_eco"
@@ -64,7 +64,8 @@ const (
 var validTaskTransitions = map[TaskStatus][]TaskStatus{
 	TaskQueued:        {TaskInProgress, TaskWaitingOnLock, TaskCancelledECO},
 	TaskWaitingOnLock: {TaskInProgress, TaskQueued, TaskCancelledECO},
-	TaskInProgress:    {TaskCompleted, TaskFailed, TaskBlocked, TaskCancelledECO},
+	TaskInProgress:    {TaskDone, TaskFailed, TaskBlocked, TaskCancelledECO},
+	TaskFailed:        {TaskQueued}, // retry or escalation (Section 15.4)
 }
 
 func ValidTaskTransition(from, to TaskStatus) bool {

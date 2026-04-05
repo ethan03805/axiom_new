@@ -6,20 +6,23 @@ import (
 	"os"
 
 	"github.com/openaxiom/axiom/internal/config"
+	"github.com/openaxiom/axiom/internal/engine"
 	"github.com/openaxiom/axiom/internal/project"
 	"github.com/openaxiom/axiom/internal/state"
 )
 
 // App is the Axiom application composition root.
-// It wires together config, state, and services.
+// It wires together config, state, engine, and services.
 type App struct {
 	Config      *config.Config
 	DB          *state.DB
+	Engine      *engine.Engine
 	ProjectRoot string
 	Log         *slog.Logger
 }
 
-// Open discovers the project, loads config, opens the database, and runs migrations.
+// Open discovers the project, loads config, opens the database, runs migrations,
+// and creates the engine runtime.
 func Open(log *slog.Logger) (*App, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -51,16 +54,31 @@ func Open(log *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
+	eng, err := engine.New(engine.Options{
+		Config:  cfg,
+		DB:      db,
+		RootDir: root,
+		Log:     log,
+	})
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("creating engine: %w", err)
+	}
+
 	return &App{
 		Config:      cfg,
 		DB:          db,
+		Engine:      eng,
 		ProjectRoot: root,
 		Log:         log,
 	}, nil
 }
 
-// Close shuts down the application.
+// Close shuts down the application and engine.
 func (a *App) Close() error {
+	if a.Engine != nil {
+		a.Engine.Stop()
+	}
 	if a.DB != nil {
 		return a.DB.Close()
 	}

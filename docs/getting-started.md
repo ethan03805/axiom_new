@@ -11,8 +11,8 @@
 ### From Source
 
 ```bash
-git clone https://github.com/openaxiom/axiom.git
-cd axiom
+git clone https://github.com/ethan03805/axiom_new.git
+cd axiom_new
 go build -o ~/bin/axiom ./cmd/axiom
 ```
 
