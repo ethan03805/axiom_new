@@ -74,7 +74,7 @@ Task tree nodes with status tracking.
 | `parent_id` | TEXT | FK → tasks | Parent task (for tree structure) |
 | `title` | TEXT | NOT NULL | Task title |
 | `description` | TEXT | | Detailed description |
-| `status` | TEXT | NOT NULL DEFAULT 'queued' | queued, in_progress, done, failed, blocked, waiting_on_lock, cancelled_eco |
+| `status` | TEXT | NOT NULL DEFAULT 'queued' | queued, in_progress, completed, failed, blocked, waiting_on_lock, cancelled_eco |
 | `tier` | TEXT | NOT NULL | local, cheap, standard, premium |
 | `task_type` | TEXT | NOT NULL DEFAULT 'implementation' | implementation, test, review |
 | `base_snapshot` | TEXT | | Git SHA this task was planned against |
@@ -333,6 +333,85 @@ CREATE INDEX idx_cost_log_run ON cost_log(run_id);
 CREATE INDEX idx_ui_sessions_project ON ui_sessions(project_id);
 CREATE INDEX idx_ui_messages_session ON ui_messages(session_id);
 ```
+
+## Repository API
+
+All database access goes through typed repository methods on the `state.DB` struct. These provide CRUD operations, status transition enforcement, and transactional safety.
+
+### Domain Models
+
+Every table has a corresponding Go struct in `internal/state/models.go`. Typed string enums enforce valid values at the Go level:
+
+| Type | Values |
+|------|--------|
+| `RunStatus` | `draft_srs`, `awaiting_srs_approval`, `active`, `paused`, `cancelled`, `completed`, `error` |
+| `TaskStatus` | `queued`, `in_progress`, `waiting_on_lock`, `completed`, `failed`, `blocked`, `cancelled_eco` |
+| `AttemptStatus` | `running`, `passed`, `failed`, `escalated` |
+| `AttemptPhase` | `executing`, `validating`, `reviewing`, `awaiting_orchestrator_gate`, `queued_for_merge`, `merging`, `succeeded`, `failed`, `escalated` |
+| `ECOStatus` | `proposed`, `approved`, `rejected` |
+| `TaskTier` | `local`, `cheap`, `standard`, `premium` |
+| `TaskType` | `implementation`, `test`, `review` |
+| `ContainerType` | `meeseeks`, `reviewer`, `validator`, `sub_orchestrator` |
+| `SessionMode` | `bootstrap`, `approval`, `execution`, `postrun` |
+
+### Status Transition Invariants
+
+Status update methods use `WithTx` (transactional read-then-write) to enforce valid transitions. Invalid transitions return `ErrInvalidTransition`.
+
+**Run transitions:**
+```
+draft_srs → awaiting_srs_approval
+awaiting_srs_approval → active | draft_srs
+active → paused | cancelled | completed | error
+paused → active | cancelled
+```
+
+**Task transitions:**
+```
+queued → in_progress | waiting_on_lock | cancelled_eco
+waiting_on_lock → in_progress | queued | cancelled_eco
+in_progress → completed | failed | blocked | cancelled_eco
+```
+
+**Attempt transitions:** `running → passed | failed | escalated`
+
+**Phase transitions:** `executing → validating → reviewing → awaiting_orchestrator_gate → queued_for_merge → merging → succeeded` (with `failed` or `escalated` reachable from any non-terminal phase)
+
+**ECO transitions:** `proposed → approved | rejected`
+
+### Repository Methods by Domain
+
+**Projects** (`projects.go`):
+`CreateProject`, `GetProject`, `GetProjectByRootPath`, `ListProjects`
+
+**Runs** (`runs.go`):
+`CreateRun`, `GetRun`, `GetActiveRun`, `ListRunsByProject`, `UpdateRunStatus`
+
+**Tasks** (`tasks.go`):
+`CreateTask`, `GetTask`, `ListTasksByRun`, `ListTasksByStatus`, `UpdateTaskStatus`, `AddTaskDependency`, `GetTaskDependencies`, `AddTaskSRSRef`, `GetTaskSRSRefs`, `AddTaskTargetFile`, `GetTaskTargetFiles`, `AcquireLock`, `ReleaseLock`, `ReleaseTaskLocks`, `GetTaskLocks`, `AddLockWait`, `RemoveLockWait`, `ListLockWaits`
+
+**Attempts** (`attempts.go`):
+`CreateAttempt`, `GetAttempt`, `ListAttemptsByTask`, `UpdateAttemptStatus`, `UpdateAttemptPhase`, `CreateValidationRun`, `ListValidationRuns`, `CreateReviewRun`, `ListReviewRuns`, `CreateArtifact`, `ListArtifacts`
+
+**Sessions** (`sessions.go`):
+`CreateSession`, `GetSession`, `ListSessionsByProject`, `UpdateSessionActivity`, `AddMessage`, `GetMessages`, `AddSessionSummary`, `AddInputHistory`
+
+**Events & Costs** (`events.go`):
+`CreateEvent`, `ListEventsByRun`, `ListEventsByType`, `CreateCostLog`, `ListCostLogByRun`, `TotalCostByRun`
+
+**ECOs** (`eco.go`):
+`CreateECO`, `GetECO`, `ListECOsByRun`, `UpdateECOStatus`
+
+**Containers** (`containers.go`):
+`CreateContainerSession`, `GetContainerSession`, `ListActiveContainers`, `ListContainersByRun`, `MarkContainerStopped`
+
+### Sentinel Errors
+
+| Error | Meaning |
+|-------|---------|
+| `ErrNotFound` | No row matched the query |
+| `ErrInvalidTransition` | Status/phase transition violates the state machine |
+| `ErrLockConflict` | Resource is already locked by a different task |
 
 ## Entity Relationships
 

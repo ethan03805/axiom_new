@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go 1.22+** (tested with Go 1.26)
+- **Go 1.25+** (module requires Go 1.25)
 - **Git** (any recent version)
 - **Docker** (required for later phases — not needed for basic project setup)
 

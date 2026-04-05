@@ -11,11 +11,20 @@ axiom/
 │   ├── app/                # Composition root (wires config, state, services)
 │   ├── config/             # TOML config loading, validation, layering
 │   ├── project/            # Project init, discovery, filesystem contracts
-│   ├── state/              # SQLite database, migrations, connection management
-│   │   └── migrations/     # Embedded SQL migration files
+│   ├── state/              # SQLite state store — DB, migrations, domain models, repositories
+│   │   ├── migrations/     # Embedded SQL migration files
+│   │   ├── models.go       # Domain types, status enums, transition validators, WithTx helper
+│   │   ├── projects.go     # Project CRUD
+│   │   ├── runs.go         # Run CRUD + status transitions
+│   │   ├── tasks.go        # Task CRUD, dependencies, locks, SRS refs, target files
+│   │   ├── attempts.go     # Attempts, validation runs, review runs, artifacts
+│   │   ├── sessions.go     # UI sessions, messages, summaries, input history
+│   │   ├── events.go       # Events + cost log
+│   │   ├── eco.go          # ECO log + status transitions
+│   │   └── containers.go   # Container session tracking
 │   ├── version/            # Build-time version injection
 │   │
-│   │   --- Future packages (directories created, not yet implemented) ---
+│   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
 │   ├── bitnet/             # Local BitNet inference integration
@@ -110,7 +119,7 @@ To add a new migration:
 
 ### Current Schema
 
-The initial migration (`001_initial_schema.sql`) creates 20 tables matching the architecture's Section 15.2:
+The initial migration (`001_initial_schema.sql`) creates 20 tables matching the architecture's Section 15.2. All tables have corresponding repository methods in the `state` package (see [Database Schema Reference](database-schema.md) for the full repository API):
 
 | Table | Purpose |
 |-------|---------|
@@ -157,8 +166,8 @@ Current test coverage by package:
 | Package | Tests | Coverage |
 |---------|-------|----------|
 | `internal/version` | 2 | Version string formatting |
-| `internal/config` | 7 | Default values, validation, TOML loading, round-trip serialization |
-| `internal/state` | 5 | DB open, migrate, reopen, foreign keys, WAL mode |
+| `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
+| `internal/state` | 69 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
 
 ### Test Patterns
@@ -180,3 +189,26 @@ The following rules from ARCHITECTURE.md govern all implementation:
 7. **View-model clients** — TUI and API consume engine-authored events, never read SQLite directly
 
 See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
+
+## Implementation Status
+
+| Phase | Name | Status |
+|-------|------|--------|
+| 0 | Foundation and Repo Bootstrap | Complete |
+| 1 | Project Bootstrap, Config, and Filesystem Contracts | Complete |
+| 2 | SQLite State Store and Core Domain Services | Complete |
+| 3 | Engine Kernel and Event Infrastructure | Not started |
+| 4–20 | Remaining phases | Not started |
+
+### Phase 2 Summary
+
+Phase 2 added the full domain service layer to the `state` package:
+
+- **Domain models** — 21 typed structs matching every table in the schema, plus typed status enums with `Valid*Transition()` functions
+- **Repository methods** ��� CRUD operations for all entities (projects, runs, tasks, attempts, validation/review runs, artifacts, sessions, events, costs, ECOs, containers)
+- **Transactional helpers** — `WithTx` for atomic read-then-write patterns; used by all status transition methods
+- **Invariant enforcement** — status transitions are validated before SQL execution; invalid transitions return `ErrInvalidTransition`
+- **Lock management** — `AcquireLock` is transactional with `ErrLockConflict` detection; `ReleaseTaskLocks` for batch cleanup
+- **69 tests** covering all CRUD operations, valid/invalid transitions, lock conflicts, timestamp handling, and referential integrity
+
+See [Database Schema Reference](database-schema.md) for the complete repository API.
