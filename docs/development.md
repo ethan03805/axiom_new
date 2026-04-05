@@ -36,18 +36,24 @@ axiom/
 │   ├── gitops/             # Git operations manager (Phase 4)
 │   │   └── gitops.go       # Manager, CommitInfo, FormatCommitMessage, branch/diff/snapshot/cleanup
 │   │
+│   ├── ipc/                # Filesystem IPC for container communication (Phase 5)
+│   │   ├── message.go      # Message types (14 types), Envelope, typed payloads
+│   │   ├── dirs.go         # Per-task directory management, volume mounts, message read/write
+│   │   └── spec.go         # TaskSpec and ReviewSpec writers (Architecture Sections 10.3, 11.7)
+│   │
+│   ├── container/          # Docker container lifecycle management (Phase 5)
+│   │   └── docker.go       # DockerService (ContainerService impl), BuildArgs, hardening flags, orphan cleanup
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
 │   ├── bitnet/             # Local BitNet inference integration
 │   ├── budget/             # Budget enforcement and cost tracking
 │   ├── cli/                # CLI command helpers
-│   ├── container/          # Docker container lifecycle management
 │   ├── doctor/             # System health checks
 │   ├── eco/                # Engineering Change Order management
 │   ├── index/              # Semantic indexer (tree-sitter)
 │   ├── inference/          # Inference broker and provider routing
-│   ├── ipc/                # Filesystem IPC for container communication
 │   ├── manifest/           # Output manifest parsing and validation
 │   ├── mergequeue/         # Serialized merge queue
 │   ├── models/             # Model registry
@@ -130,7 +136,11 @@ To add a new migration:
 
 ### Current Schema
 
-The initial migration (`001_initial_schema.sql`) creates 20 tables matching the architecture's Section 15.2. All tables have corresponding repository methods in the `state` package (see [Database Schema Reference](database-schema.md) for the full repository API):
+The database is built through sequential migrations:
+- `001_initial_schema.sql` — creates 20 tables matching Architecture Section 15.2
+- `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` for independent container lifecycle management (Phase 5)
+
+All tables have corresponding repository methods in the `state` package (see [Database Schema Reference](database-schema.md) for the full repository API):
 
 | Table | Purpose |
 |-------|---------|
@@ -183,6 +193,8 @@ Current test coverage by package:
 | `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
 | `internal/engine` | 28 | Engine lifecycle (8), run lifecycle (8), status projections (5), worker pool (5), service interface wiring (2) |
 | `internal/gitops` | 38 | Branch management (8), snapshots (2), dirty/clean checks (6), commit formatting (3), add/commit (4), diffs (6), setup work branch (3), cancel cleanup (3), exit criteria (2), architecture compliance (1) |
+| `internal/ipc` | 24 | Message types (6), envelope serialization (4), directory management (6), spec writers (5), message read/write (3) |
+| `internal/container` | 17 | Container naming (2), hardening flags (7), start/stop lifecycle (4), list/cleanup (3), interface compliance (1) |
 
 ### Test Patterns
 
@@ -190,7 +202,9 @@ Current test coverage by package:
 - Database tests create fresh SQLite databases per test
 - Engine tests use noop service implementations for testability without Docker or network
 - Gitops tests create real temporary git repositories with initial commits for integration testing
-- No external service dependencies in current tests
+- Container tests use a `mockExecutor` that records Docker commands instead of running them
+- IPC tests verify filesystem operations against real temp directories
+- No external service dependencies in current tests (Docker, network, inference are all mocked)
 
 ## Architecture Constraints
 
@@ -216,7 +230,24 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 2 | SQLite State Store and Core Domain Services | Complete |
 | 3 | Engine Kernel and Event Infrastructure | Complete |
 | 4 | Git Operations and Workspace Safety | Complete |
-| 5-20 | Remaining phases | Not started |
+| 5 | IPC, Container Lifecycle, and Sandbox Images | Complete |
+| 6-20 | Remaining phases | Not started |
+
+### Phase 5 Summary
+
+Phase 5 established the untrusted execution plane with filesystem IPC and Docker container lifecycle management:
+
+- **IPC message protocol** (`internal/ipc/message.go`) — All 14 message types from Architecture Section 20.4 defined as typed constants. JSON envelope format (`Envelope`) wraps every IPC message with type discriminator, task ID, timestamp, and raw JSON payload. Typed payload structs for scope expansion requests/responses (Section 10.7) and inference requests (Section 19.2).
+
+- **IPC directory management** (`internal/ipc/dirs.go`) — `TaskDirs` computes the four per-task directory paths (spec, staging, ipc/input, ipc/output) matching Section 28.1. `CreateTaskDirs` creates them idempotently. `CleanupTaskDirs` removes them. `VolumeMounts()` generates Docker mount strings with correct modes (spec=ro, staging=rw, ipc=rw per Section 12.3). `WriteMessage`/`ReadMessages` implement sequentially-named JSON file exchange for container↔engine communication.
+
+- **Spec writers** (`internal/ipc/spec.go`) — `WriteTaskSpec` produces a Markdown spec file matching the exact format from Architecture Section 10.3, including base snapshot, objective, context, interface contract, constraints, acceptance criteria, and output format instructions directing to `/workspace/staging/` with `manifest.json`. `WriteReviewSpec` produces the reviewer evaluation template from Section 11.7 with verdict, criterion evaluation, and feedback sections.
+
+- **Docker container service** (`internal/container/docker.go`) — `DockerService` implements the `engine.ContainerService` interface. `BuildArgs` constructs Docker run commands with all hardening flags from Section 12.6.1: `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit=256`, `--tmpfs /tmp:rw,noexec,size=256m`, `--network=none`, `--user 1000:1000`, `--cpus`, `--memory`, `--rm`. Container naming follows `axiom-<task-id>-<timestamp>-<seq>` pattern. `Start` persists a `ContainerSession` to SQLite and emits `ContainerStarted` events. `Stop` issues `docker stop` with fallback to `docker rm -f` and records the stop. `Cleanup` removes orphaned `axiom-*` containers on startup. All execution is abstracted behind a `CommandExecutor` interface for testability.
+
+- **Schema evolution** (`migrations/002_relax_container_session_fks.sql`) — Relaxed foreign key constraints on `container_sessions` table so container lifecycle management (orphan cleanup, tracking) works independently of run/task context.
+
+- **Nil-safety fixes** — Added nil-logger defaulting to `state.Open` and `events.New` (same pattern as `engine.New`), ensuring all components handle nil loggers gracefully.
 
 ### Phase 4 Summary
 

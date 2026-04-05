@@ -28,6 +28,9 @@ type Bus struct {
 
 // New creates a new event bus backed by the given database.
 func New(db *state.DB, log *slog.Logger) *Bus {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Bus{
 		db:   db,
 		log:  log,

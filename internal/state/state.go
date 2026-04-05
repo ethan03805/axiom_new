@@ -27,6 +27,10 @@ type DB struct {
 // Open opens or creates an Axiom SQLite database at the given path.
 // It configures WAL mode, busy timeout, and connection pooling per Section 15.3.
 func Open(dbPath string, log *slog.Logger) (*DB, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating db directory: %w", err)

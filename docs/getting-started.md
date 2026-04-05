@@ -4,7 +4,7 @@
 
 - **Go 1.25+** (module requires Go 1.25)
 - **Git** (any recent version)
-- **Docker** (required for later phases — not needed for basic project setup)
+- **Docker** (required for container isolation — Meeseeks, reviewers, and validation sandboxes run in Docker)
 
 ## Installation
 
@@ -81,9 +81,12 @@ your-project/
 │   ├── models.json          # Model capability index (committed)
 │   ├── .gitignore           # Excludes runtime state
 │   ├── containers/          # Ephemeral container data (gitignored)
-│   │   ├── specs/
-│   │   ├── staging/
-│   │   └─�� ipc/
+│   │   ├── specs/           # TaskSpec/ReviewSpec per task
+│   │   ├── staging/         # Meeseeks output staging per task
+│   │   └── ipc/             # JSON IPC message dirs per task
+│   │       └── <task-id>/
+│   │           ├── input/   # Engine -> Container messages
+│   │           └── output/  # Container -> Engine messages
 │   ├── validation/          # Validation sandbox data (gitignored)
 │   ├── eco/                 # Engineering Change Orders (committed)
 │   └── logs/                # Runtime logs (gitignored)
@@ -121,6 +124,18 @@ The work branch is deterministic — given the same project slug, the branch nam
 **Important:** Axiom requires a clean working tree before starting a run. Commit or stash any uncommitted changes first.
 
 See [Git Operations Reference](git-operations.md) for implementation details.
+
+## Container Architecture
+
+Axiom runs all untrusted agents (Meeseeks workers, reviewers, validators) in Docker containers with strict isolation. Containers:
+
+- Have **no network access** (`--network=none`)
+- Have **no project filesystem mount** (only spec, staging, and IPC dirs are mounted)
+- Run as **non-root** (`--user 1000:1000`)
+- Use a **read-only root filesystem** (`--read-only`)
+- Communicate with the engine exclusively via **filesystem IPC** (JSON files)
+
+See [IPC & Container Lifecycle Reference](ipc-container.md) for details.
 
 ## What's Next
 

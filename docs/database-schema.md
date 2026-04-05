@@ -24,6 +24,7 @@ CREATE TABLE schema_migrations (
 
 Current migrations:
 - `001_initial_schema.sql` — full schema from Architecture Section 15.2
+- `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` (Phase 5)
 
 ## Table Reference
 
@@ -233,13 +234,13 @@ Engineering Change Order records.
 ### Containers
 
 #### `container_sessions`
-Active and historical container metadata.
+Active and historical container metadata. FK constraints on `run_id` and `task_id` were relaxed in migration 002 so container lifecycle management (orphan cleanup, tracking) works independently of run/task context.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| `id` | TEXT | PRIMARY KEY | Container name (axiom-<task-id>-<timestamp>) |
-| `run_id` | TEXT | FK → project_runs | |
-| `task_id` | TEXT | FK → tasks | |
+| `id` | TEXT | PRIMARY KEY | Container name (axiom-<task-id>-<timestamp>-<seq>) |
+| `run_id` | TEXT | NOT NULL DEFAULT '' | Associated run (no FK constraint) |
+| `task_id` | TEXT | NOT NULL DEFAULT '' | Associated task (no FK constraint) |
 | `container_type` | TEXT | NOT NULL | meeseeks, reviewer, validator, sub_orchestrator |
 | `image` | TEXT | NOT NULL | Docker image used |
 | `model_id` | TEXT | | Model assigned to this container |
@@ -422,7 +423,7 @@ project_runs 1──* tasks
 project_runs 1──* events
 project_runs 1──* cost_log
 project_runs 1──* eco_log
-project_runs 1──* container_sessions
+project_runs 1──* container_sessions  (logical, no FK constraint)
 tasks 1──* task_attempts
 tasks *──* task_dependencies (self-referencing)
 tasks 1──* task_target_files
