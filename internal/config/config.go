@@ -15,6 +15,7 @@ type Config struct {
 	Budget        BudgetConfig        `toml:"budget"`
 	Concurrency   ConcurrencyConfig   `toml:"concurrency"`
 	Orchestrator  OrchestratorConfig  `toml:"orchestrator"`
+	Inference     InferenceConfig     `toml:"inference"`
 	BitNet        BitNetConfig        `toml:"bitnet"`
 	Docker        DockerConfig        `toml:"docker"`
 	Validation    ValidationConfig    `toml:"validation"`
@@ -23,6 +24,16 @@ type Config struct {
 	API           APIConfig           `toml:"api"`
 	CLI           CLIConfig           `toml:"cli"`
 	Observability ObservabilityConfig `toml:"observability"`
+}
+
+// InferenceConfig holds provider credentials and broker policy.
+// Per Architecture Section 19.5, credentials are stored only in trusted config.
+type InferenceConfig struct {
+	OpenRouterAPIKey string `toml:"openrouter_api_key"`
+	OpenRouterBase   string `toml:"openrouter_base_url"`
+	MaxRequestsTask  int    `toml:"max_requests_per_task"`
+	TokenCapPerReq   int    `toml:"token_cap_per_request"`
+	TimeoutSeconds   int    `toml:"timeout_seconds"`
 }
 
 type ProjectConfig struct {
@@ -133,6 +144,12 @@ func Default(name, slug string) Config {
 		Orchestrator: OrchestratorConfig{
 			Runtime:             "claw",
 			SRSApprovalDelegate: "user",
+		},
+		Inference: InferenceConfig{
+			OpenRouterBase:  "https://openrouter.ai/api/v1",
+			MaxRequestsTask: 50,
+			TokenCapPerReq:  16384,
+			TimeoutSeconds:  120,
 		},
 		BitNet: BitNetConfig{
 			Enabled:           true,
@@ -313,6 +330,9 @@ func mergeConfig(base, overlay Config) Config {
 	}
 	if overlay.Orchestrator.Runtime != "" {
 		base.Orchestrator = overlay.Orchestrator
+	}
+	if overlay.Inference.OpenRouterBase != "" || overlay.Inference.OpenRouterAPIKey != "" {
+		base.Inference = overlay.Inference
 	}
 	if overlay.Docker.Image != "" {
 		base.Docker = overlay.Docker

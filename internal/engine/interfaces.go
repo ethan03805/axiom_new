@@ -31,13 +31,26 @@ type ContainerService interface {
 	Cleanup(ctx context.Context) error
 }
 
+// InferenceMessage represents a single message in an inference conversation.
+type InferenceMessage struct {
+	Role    string
+	Content string
+}
+
 // InferenceRequest describes a model inference request from an agent.
+// Per Architecture Section 19.5 and 20.4.
 type InferenceRequest struct {
-	ModelID     string
-	Prompt      string
-	MaxTokens   int
-	Temperature float64
-	TaskID      string
+	RunID              string
+	TaskID             string
+	AttemptID          int64
+	AgentType          string // meeseeks, reviewer, orchestrator, sub_orchestrator
+	ModelID            string
+	Tier               string // local, cheap, standard, premium
+	Messages           []InferenceMessage
+	Prompt             string  // legacy single-prompt shorthand; Messages takes precedence
+	MaxTokens          int
+	Temperature        float64
+	GrammarConstraints *string // GBNF grammar for BitNet structured output
 }
 
 // InferenceResponse holds the result of a model inference request.
@@ -47,6 +60,8 @@ type InferenceResponse struct {
 	OutputTokens int64
 	CostUSD      float64
 	ModelID      string
+	FinishReason string // stop, length, tool_calls, content_filter, error
+	ProviderName string // openrouter, bitnet
 }
 
 // InferenceService abstracts model inference brokering for testability.

@@ -44,16 +44,23 @@ axiom/
 │   ├── container/          # Docker container lifecycle management (Phase 5)
 │   │   └── docker.go       # DockerService (ContainerService impl), BuildArgs, hardening flags, orphan cleanup
 │   │
+│   ├── inference/          # Inference broker, provider routing, cost enforcement (Phase 6)
+│   │   ├── provider.go     # Provider interface, types, sentinel errors
+│   │   ├── openrouter.go   # OpenRouter API client (OpenAI-compatible chat completions)
+│   │   ├── bitnet_provider.go # BitNet local inference client (GBNF grammar support)
+│   │   ├── broker.go       # Central broker: validate, route, execute, log, emit events
+│   │   ├── budget.go       # Budget pre-authorization (goroutine-safe)
+│   │   └── ratelimit.go    # Per-task rate limiting
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
-│   ├── bitnet/             # Local BitNet inference integration
-│   ├── budget/             # Budget enforcement and cost tracking
+│   ├── bitnet/             # Local BitNet server lifecycle commands
+│   ├── budget/             # (Budget logic is in inference/budget.go)
 │   ├── cli/                # CLI command helpers
 │   ├── doctor/             # System health checks
 │   ├── eco/                # Engineering Change Order management
 │   ├── index/              # Semantic indexer (tree-sitter)
-│   ├── inference/          # Inference broker and provider routing
 │   ├── manifest/           # Output manifest parsing and validation
 │   ├── mergequeue/         # Serialized merge queue
 │   ├── models/             # Model registry
@@ -195,6 +202,7 @@ Current test coverage by package:
 | `internal/gitops` | 38 | Branch management (8), snapshots (2), dirty/clean checks (6), commit formatting (3), add/commit (4), diffs (6), setup work branch (3), cancel cleanup (3), exit criteria (2), architecture compliance (1) |
 | `internal/ipc` | 24 | Message types (6), envelope serialization (4), directory management (6), spec writers (5), message read/write (3) |
 | `internal/container` | 17 | Container naming (2), hardening flags (7), start/stop lifecycle (4), list/cleanup (3), interface compliance (1) |
+| `internal/inference` | 51 | Budget enforcer (11), rate limiter (6), OpenRouter provider (11), BitNet provider (7), broker integration (16) |
 
 ### Test Patterns
 
@@ -204,6 +212,7 @@ Current test coverage by package:
 - Gitops tests create real temporary git repositories with initial commits for integration testing
 - Container tests use a `mockExecutor` that records Docker commands instead of running them
 - IPC tests verify filesystem operations against real temp directories
+- Inference tests use `httptest.NewServer` for mock provider endpoints and `mockProvider` for broker integration
 - No external service dependencies in current tests (Docker, network, inference are all mocked)
 
 ## Architecture Constraints
@@ -231,7 +240,36 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 3 | Engine Kernel and Event Infrastructure | Complete |
 | 4 | Git Operations and Workspace Safety | Complete |
 | 5 | IPC, Container Lifecycle, and Sandbox Images | Complete |
-| 6-20 | Remaining phases | Not started |
+| 6 | Inference Broker, Provider Routing, and Cost Enforcement | Complete |
+| 7-20 | Remaining phases | Not started |
+
+### Phase 6 Summary
+
+Phase 6 centralized all model access behind engine policy with the `internal/inference/` package:
+
+- **Provider abstraction** (`provider.go`) — `Provider` interface with `Name()`, `Available()`, and `Complete()` methods. Shared types: `ProviderRequest`, `ProviderResponse`, `Message`, `ModelPricing`. Sentinel errors for budget exceeded, rate limit, model not allowed, token cap, and provider down.
+
+- **OpenRouter provider** (`openrouter.go`) — HTTP client for the OpenRouter chat completions API (`POST /chat/completions`). Implements the OpenAI-compatible request/response format with Bearer token authentication. Configurable timeout via functional options. Response parsing extracts content, finish reason, and token usage. Handles all error status codes (402 payment required, 429 rate limited, 500+ server errors).
+
+- **BitNet provider** (`bitnet_provider.go`) — HTTP client for a local BitNet inference server using the same OpenAI-compatible API format. Supports GBNF grammar constraints for structured output (Architecture Section 19.3). Grammar field is only included in the request body when non-nil.
+
+- **Budget enforcer** (`budget.go`) — Goroutine-safe budget tracker implementing pre-authorization per Architecture Section 21.3. `Authorize(maxTokens, pricing)` calculates worst-case cost (`max_tokens * completion_cost_per_token`) and rejects if it exceeds remaining budget. Zero-cost models (BitNet) are always authorized regardless of budget. `Record()` tracks actual spend. `WarnReached()` and `Exceeded()` check thresholds.
+
+- **Rate limiter** (`ratelimit.go`) — Goroutine-safe per-task request counter. Default limit is 50 requests per task (configurable via `inference.max_requests_per_task`). `Reset()` clears the count for a task (used on retry with fresh container).
+
+- **Inference broker** (`broker.go`) — Central broker service implementing `engine.InferenceService`. The `Infer()` method enforces four validation checks before any provider call: (1) token cap, (2) model allowlist + tier hierarchy, (3) budget pre-authorization, (4) per-task rate limit. Routes requests to the appropriate provider (cloud for standard/premium/cheap tiers, local for local tier). Logs every completed request to the `cost_log` table via `state.DB.CreateCostLog()`. Emits `inference_requested`, `inference_completed`, `inference_failed`, `provider_unavailable`, `budget_warning`, and `budget_exceeded` events via the event bus. Tracks latency in event details.
+
+- **Tier hierarchy** — The model allowlist enforces that a task at tier N may use models at tier N or below: `local(0) < cheap(1) < standard(2) < premium(3)`. A local-tier task cannot request a standard-tier model.
+
+- **Config additions** — `[inference]` section added to `config.Config` with `openrouter_api_key`, `openrouter_base_url`, `max_requests_per_task`, `token_cap_per_request`, and `timeout_seconds`. API keys are stored in trusted config only (never in containers).
+
+- **Event additions** — Five new authoritative event types: `inference_requested`, `inference_completed`, `inference_failed`, `provider_available`, `provider_unavailable`.
+
+- **Interface evolution** — `engine.InferenceRequest` expanded with `RunID`, `AttemptID`, `AgentType`, `Tier`, `Messages`, `GrammarConstraints`. `engine.InferenceResponse` expanded with `FinishReason` and `ProviderName`. Compile-time interface assertion (`var _ engine.InferenceService = (*Broker)(nil)`) ensures the broker satisfies the engine interface.
+
+- **Known deferred items** — Streaming via chunked IPC output files (requires Phase 10 task execution). Queue-until-connectivity for non-local tasks when cloud is down (returns `ErrProviderDown` immediately; queuing belongs in Phase 10 scheduler).
+
+See [Inference Broker Reference](inference-broker.md) for the full API.
 
 ### Phase 5 Summary
 
@@ -276,12 +314,12 @@ See [Git Operations Reference](git-operations.md) for the full API.
 Phase 3 built the trusted control plane that all command surfaces use:
 
 - **Event bus** (`internal/events/`) — Central event emitter with two categories of events:
-  - **Authoritative events** (20+ types: `run_created`, `task_started`, etc.) are persisted to the SQLite `events` table as the audit trail (Architecture Section 22.4).
+  - **Authoritative events** (25+ types: `run_created`, `task_started`, `inference_completed`, `provider_unavailable`, etc.) are persisted to the SQLite `events` table as the audit trail (Architecture Section 22.4).
   - **View-model events** (8 types: `startup_summary`, `session_mode_changed`, `task_projection_updated`, etc.) are fanned out to in-memory subscribers but NOT persisted (Architecture Section 26.2.10).
   - Subscriber fan-out supports optional filters, buffered channels, and concurrent-safe operation.
   - SQLite writes are serialized via a dedicated write mutex to avoid SQLITE_BUSY under concurrent publishes.
 
-- **Service interfaces** (`internal/engine/interfaces.go`) — Abstractions for `GitService`, `ContainerService`, `InferenceService`, and `IndexService` so orchestration logic is testable without real Docker or network calls. Tests use noop implementations.
+- **Service interfaces** (`internal/engine/interfaces.go`) — Abstractions for `GitService`, `ContainerService`, `InferenceService`, and `IndexService` so orchestration logic is testable without real Docker or network calls. Tests use noop implementations. `InferenceRequest` includes fields for run/task/attempt tracking, model tier, messages, grammar constraints; `InferenceResponse` includes cost, token counts, provider name, and finish reason. Phase 6 provides a real implementation of `InferenceService` via the `inference.Broker`.
 
 - **Engine runtime** (`internal/engine/engine.go`) — Long-lived `Engine` struct that wires config, database, event bus, and service interfaces. Provides `Start()`/`Stop()` lifecycle, background worker pool, and accessor methods (`Bus()`, `DB()`, `Config()`, `RootDir()`). The `emitEvent()` helper logs errors from event persistence without blocking the calling operation.
 

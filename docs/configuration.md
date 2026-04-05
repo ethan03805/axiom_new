@@ -25,6 +25,13 @@ max_meeseeks = 10                      # Maximum concurrent worker containers
 runtime = "claw"                       # claw | claude-code | codex | opencode
 srs_approval_delegate = "user"         # user | claw
 
+[inference]
+openrouter_api_key = ""                # OpenRouter API key (stored in global config only)
+openrouter_base_url = "https://openrouter.ai/api/v1"  # OpenRouter API base URL
+max_requests_per_task = 50             # Per-task rate limit (requests per task)
+token_cap_per_request = 16384          # Maximum max_tokens value per request
+timeout_seconds = 120                  # HTTP timeout for provider requests
+
 [bitnet]
 enabled = true                         # Enable local BitNet inference
 host = "localhost"                     # BitNet server host
@@ -116,6 +123,8 @@ The following validation rules are enforced when loading configuration:
 | `validation.network` | Must be "none" |
 | `cli.ui_mode` | Must be: auto, tui, or plain |
 | `api.port` | Must be 1-65535 |
+
+**Note:** The `[inference]` section is not currently validated at startup — only the `openrouter_api_key` must be non-empty for cloud inference to work. Set it in the global config (`~/.axiom/config.toml`) to keep secrets out of the project config.
 
 Invalid configurations produce actionable error messages listing all violations.
 

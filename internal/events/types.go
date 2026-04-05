@@ -39,6 +39,12 @@ const (
 
 	BudgetWarning  EventType = "budget_warning"
 	BudgetExceeded EventType = "budget_exceeded"
+
+	InferenceRequested   EventType = "inference_requested"
+	InferenceCompleted   EventType = "inference_completed"
+	InferenceFailed      EventType = "inference_failed"
+	ProviderAvailable    EventType = "provider_available"
+	ProviderUnavailable  EventType = "provider_unavailable"
 )
 
 // --- View-model events (fanned out to subscribers, NOT persisted) ---
