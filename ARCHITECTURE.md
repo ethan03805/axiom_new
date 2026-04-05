@@ -33,7 +33,7 @@
 23. [Git Integration](#23-git-integration)
 24. [Claw Integration](#24-claw-integration)
 25. [Skill System](#25-skill-system)
-26. [GUI Dashboard](#26-gui-dashboard)
+26. [User Interfaces](#26-user-interfaces)
 27. [CLI Reference](#27-cli-reference)
 28. [Project Directory Structure](#28-project-directory-structure)
 29. [Security Model](#29-security-model)
@@ -75,6 +75,7 @@ Worker agents in Axiom are called **Meeseeks** (inspired by Rick and Morty's Mr.
 | Local inference | BitNet + Falcon3 |
 | Cloud inference | OpenRouter API |
 | GUI framework | Wails v2 (Go + React) |
+| CLI/TUI framework | Bubble Tea + Bubbles + Lip Gloss |
 | Semantic indexer | tree-sitter |
 | Claw integration | REST API + WebSocket + Cloudflare Tunnel |
 
@@ -201,6 +202,7 @@ HOST SERVICES (managed by Trusted Engine):
 | **Meeseeks** | Untrusted | Disposable agent that executes a single TaskSpec |
 | **Reviewer** | Untrusted | Disposable agent that evaluates Meeseeks output |
 | **GUI Dashboard** | Control Plane | Wails desktop app subscribing to engine events |
+| **Session UX Manager / Axiom TUI** | Control Plane | Interactive terminal session shell with startup cards, transcript rendering, prompt suggestions, slash commands, task rail, and resumable session state driven by engine events |
 | **API Server** | Control Plane | REST + WebSocket for remote Claw orchestrators |
 
 ---
@@ -1467,6 +1469,50 @@ CREATE TABLE project_runs (
     completed_at            DATETIME
 );
 
+-- Interactive CLI/TUI sessions
+CREATE TABLE ui_sessions (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL REFERENCES projects(id),
+    run_id          TEXT REFERENCES project_runs(id),
+    name            TEXT,
+    mode            TEXT NOT NULL,              -- bootstrap | approval | execution | postrun
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_active_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Transcript and UI cards for resumable terminal sessions
+CREATE TABLE ui_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL REFERENCES ui_sessions(id),
+    seq             INTEGER NOT NULL,
+    role            TEXT NOT NULL,              -- user | assistant | system
+    kind            TEXT NOT NULL,              -- user | assistant | system_card | event | tool | approval | ephemeral
+    content         TEXT NOT NULL,
+    related_task_id TEXT REFERENCES tasks(id),
+    request_id      TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (session_id, seq)
+);
+
+-- Compacted summaries for long-lived sessions
+CREATE TABLE ui_session_summaries (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL REFERENCES ui_sessions(id),
+    summary_kind    TEXT NOT NULL,              -- transcript_compaction | run_handoff
+    content         TEXT NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-project CLI input history
+CREATE TABLE ui_input_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT NOT NULL REFERENCES projects(id),
+    session_id      TEXT REFERENCES ui_sessions(id),
+    input_mode      TEXT NOT NULL,              -- prompt | command | shell
+    content         TEXT NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Tasks: durable identity and metadata
 CREATE TABLE tasks (
     id              TEXT PRIMARY KEY,
@@ -2196,6 +2242,7 @@ All LLM agents (orchestrator, sub-orchestrators, Meeseeks, reviewers) SHALL be s
 
 - An orchestrator can crash and restart without losing progress.
 - A different orchestrator instance can resume a project.
+- The interactive CLI/TUI can resume its transcript, mode, and startup context after engine restart.
 - The GUI can display accurate state regardless of orchestrator status.
 - The engine is the single source of truth.
 
@@ -2459,13 +2506,15 @@ Skills SHALL be regenerated when project configuration changes.
 
 ---
 
-## 26. GUI Dashboard
+## 26. User Interfaces
 
-### 26.1 Technology
+### 26.1 GUI Dashboard
+
+#### 26.1.1 Technology
 
 The GUI SHALL be a Wails v2 desktop application (Go backend + React frontend).
 
-### 26.2 Views
+#### 26.1.2 Views
 
 | View | Content |
 |---|---|
@@ -2479,7 +2528,7 @@ The GUI SHALL be a Wails v2 desktop application (Go backend + React frontend).
 | **Model Registry** | Browsable model catalog with capabilities, pricing, and historical performance statistics |
 | **Resource Monitor** | System CPU/memory usage, container resource consumption, BitNet server load |
 
-### 26.3 Controls
+#### 26.1.3 Controls
 
 The GUI SHALL provide controls for:
 
@@ -2491,15 +2540,177 @@ The GUI SHALL provide controls for:
 - Starting/stopping BitNet server.
 - Starting/stopping API tunnel.
 
-### 26.4 Real-Time Updates
+#### 26.1.4 Real-Time Updates
 
 The engine SHALL emit events via the Wails event system. The React frontend SHALL subscribe to these events and update the UI within 500ms. The GUI SHALL NOT poll SQLite directly — all data comes through engine-emitted events.
+
+### 26.2 Interactive CLI/TUI & Session UX
+
+#### 26.2.1 Purpose
+
+Axiom SHALL provide a first-class interactive terminal interface designed to feel operationally similar to modern coding-agent CLIs such as Claude Code and Codex: full-screen by default, event-driven, transcript-oriented, resumable, and optimized for long-running agentic work.
+
+The terminal experience SHALL remain consistent with Axiom's core workflow constraints:
+
+- Before SRS approval, the terminal behaves like a guided bootstrap session.
+- After SRS approval, the terminal becomes an operator console for approvals, status, diffs, and execution oversight.
+- The terminal SHALL NOT permit scope-changing freeform chat once the SRS is locked.
+
+#### 26.2.2 Technology
+
+The interactive terminal UI SHALL be implemented in Go using:
+
+- **Bubble Tea** for the primary event loop and terminal state machine
+- **Bubbles** for reusable terminal components (viewport, text input, lists, help, status widgets)
+- **Lip Gloss** for styling, layout, color adaptation, and terminal-safe theming
+
+The TUI SHALL run as a thin client over engine-emitted view models. It SHALL NOT read SQLite directly.
+
+#### 26.2.3 Session UX Manager
+
+The Trusted Engine SHALL include a **Session UX Manager** responsible for terminal-session orchestration. It SHALL:
+
+- Create and resume interactive CLI sessions.
+- Produce deterministic startup summaries before any LLM call is made.
+- Persist transcript messages, approval cards, and compacted session summaries.
+- Maintain the current terminal mode (`bootstrap`, `approval`, `execution`, `postrun`).
+- Generate prompt suggestions from run state, pending approvals, semantic index data, and local repo context.
+- Project task lists, active container summaries, diff previews, and budget status into terminal-safe view models.
+- Route slash commands and shell-mode actions to the appropriate engine subsystem.
+
+#### 26.2.4 Startup Experience
+
+When launched in an interactive TTY, `axiom` SHALL open the TUI and render a deterministic startup frame immediately. This startup frame SHALL be engine-authored, not LLM-authored.
+
+The startup frame SHALL include:
+
+- Workspace identity: root path, current branch, run status, orchestrator mode, budget status.
+- A primary action card derived from current persisted state:
+  - **No active run:** prompt the user to describe what to build.
+  - **Awaiting SRS approval:** prompt the user to review, approve, or reject the SRS.
+  - **Execution active:** show in-progress tasks, approvals pending, and quick status commands.
+  - **Awaiting ECO:** surface the ECO decision as the primary action.
+  - **Run complete:** prompt for diff review, export, or session handoff.
+- A prompt composer with an optional ghost suggestion.
+- A compact command row (for example: `/resume`, `/status`, `/tasks`, `/srs`, `/eco`, `/diff`, `/help`).
+
+This startup frame SHALL appear before any token-consuming orchestration work begins so the terminal always feels responsive.
+
+#### 26.2.5 Layout
+
+The default interactive terminal layout SHALL be full-screen and composed of:
+
+- **Top status bar:** project, branch, run phase, orchestrator/runtime, approval mode, budget, active workers.
+- **Main transcript viewport:** transcript messages, system cards, tool-call summaries, approval results, and event cards.
+- **Right-side task rail:** current task list, active containers, pending approvals, and budget warnings.
+- **Footer composer:** multiline text input, prompt suggestion ghost text, current mode indicator, and shortcut hints.
+- **Overlay surfaces:** slash-command palette, help view, transcript viewer, diff viewer, and approval dialogs.
+
+Tool calls, engine events, and automated checks SHOULD be collapsed to single-line summaries by default, with expand-on-demand behavior, so long-running sessions remain readable.
+
+#### 26.2.6 Input Model & Quick Commands
+
+The TUI SHALL support an interaction model familiar to coding-agent CLIs:
+
+- `/` at the start of input opens a slash-command palette.
+- `!` at the start of input enters shell mode for direct local commands.
+- `@` triggers file-path mention autocomplete.
+- Up/down arrows navigate input history.
+- Multiline input SHALL be supported without leaving the terminal.
+- A transcript viewer SHALL allow scrollback and expanded inspection of collapsed tool/event cards.
+
+The initial slash-command set SHALL include at minimum:
+
+- `/new` — start a new bootstrap session
+- `/resume` — resume an existing interactive session
+- `/status` — show current run status and resources
+- `/tasks` — show or focus the task rail
+- `/srs` — open the current SRS approval/review view
+- `/eco` — open the current ECO approval/review view
+- `/diff` — open the latest diff/merge preview
+- `/budget` — show budget details
+- `/theme` — switch CLI theme/display mode
+- `/help` — show commands and keyboard shortcuts
+- `/clear` — clear the visible transcript while preserving resumable session state
+
+#### 26.2.7 Session Modes
+
+The terminal SHALL operate in four explicit modes:
+
+| Mode | Purpose |
+|---|---|
+| `bootstrap` | Initial prompt capture, clarification, and SRS drafting before approval |
+| `approval` | SRS/ECO review and decision flow |
+| `execution` | Operator console for task progress, approvals, status, and diffs while work is running |
+| `postrun` | Final review, export, branch handoff, and follow-up actions after execution completes |
+
+Mode transitions SHALL be driven by the engine from persisted project/run state. The TUI SHALL render the active mode clearly in the footer and status bar.
+
+#### 26.2.8 Prompt Suggestions
+
+The Session UX Manager SHALL support prompt suggestions similar to modern agentic CLIs, but optimized for Axiom's workflow constraints.
+
+Suggestion priority SHALL be:
+
+1. Pending approval actions (SRS/ECO decisions)
+2. Active-run operator actions (review diff, inspect blocked task, view costs)
+3. Repo-aware bootstrap prompts derived from local project context (git status, semantic index, recent files)
+4. Generic fallback prompts
+
+Prompt suggestions SHOULD be heuristic-first and deterministic. LLM-generated suggestions MAY be added later, but only in bootstrap mode and only when explicitly enabled by configuration.
+
+#### 26.2.9 Task List, Transcript, and Compaction
+
+The TUI SHALL display a live task list in the status area, with indicators for pending, in-progress, blocked, approval-required, and completed work.
+
+Interactive sessions SHALL be persisted in `ui_sessions`, `ui_messages`, `ui_session_summaries`, and `ui_input_history` so the user can:
+
+- Resume a prior session by ID or name.
+- Review transcript history after engine restart.
+- Export a session transcript.
+- Compact long sessions while preserving enough summary state to continue operating.
+
+Compaction SHALL summarize old transcript material into structured session summaries rather than discarding it entirely.
+
+#### 26.2.10 Event Model
+
+The engine SHALL emit terminal-specific view-model events for the TUI. These SHOULD include:
+
+- `startup_summary`
+- `session_mode_changed`
+- `prompt_suggestion`
+- `task_projection_updated`
+- `approval_requested`
+- `approval_resolved`
+- `diff_preview_ready`
+- `transcript_compacted`
+
+These are interface-layer events, not orchestration-state authority. The authoritative state remains in SQLite and the engine's core tables.
+
+#### 26.2.11 Plain Text Fallback
+
+The interactive TUI SHALL be the default only when stdout is a TTY and CLI mode is `auto` or `tui`.
+
+If stdout is not a TTY, or the user explicitly requests plain rendering, Axiom SHALL fall back to a line-oriented text renderer suitable for CI logs, pipes, remote shells, and non-interactive use.
+
+The plain-text renderer SHALL preserve the same high-level workflow states and approval prompts, but without full-screen layout or interactive overlays.
 
 ---
 
 ## 27. CLI Reference
 
-### 27.1 Project Commands
+### 27.1 Interactive Session Commands
+
+| Command | Description |
+|---|---|
+| `axiom` | Launch the interactive TUI in the current project, starting or resuming the most relevant session |
+| `axiom tui` | Force launch the interactive TUI |
+| `axiom tui --plain` | Force the plain-text renderer instead of the full-screen TUI |
+| `axiom session list` | List resumable CLI/TUI sessions for the current project |
+| `axiom session resume <session-id>` | Resume a persisted interactive session transcript |
+| `axiom session export <session-id>` | Export a session transcript |
+
+### 27.2 Project Commands
 
 | Command | Description |
 |---|---|
@@ -2512,7 +2723,7 @@ The engine SHALL emit events via the Wails event system. The React frontend SHAL
 | `axiom cancel` | Cancel execution, kill containers, revert uncommitted changes |
 | `axiom export` | Export project state as human-readable JSON |
 
-### 27.2 Model Commands
+### 27.3 Model Commands
 
 | Command | Description |
 |---|---|
@@ -2522,7 +2733,7 @@ The engine SHALL emit events via the Wails event system. The React frontend SHAL
 | `axiom models list --family <family>` | Filter by model family |
 | `axiom models info <model-id>` | Show model details + historical performance |
 
-### 27.3 BitNet Commands
+### 27.4 BitNet Commands
 
 | Command | Description |
 |---|---|
@@ -2531,7 +2742,7 @@ The engine SHALL emit events via the Wails event system. The React frontend SHAL
 | `axiom bitnet status` | Show server status, resource usage, active requests |
 | `axiom bitnet models` | List available local models |
 
-### 27.4 API & Tunnel Commands
+### 27.5 API & Tunnel Commands
 
 | Command | Description |
 |---|---|
@@ -2544,20 +2755,20 @@ The engine SHALL emit events via the Wails event system. The React frontend SHAL
 | `axiom tunnel start` | Start Cloudflare Tunnel for remote Claw access |
 | `axiom tunnel stop` | Stop the tunnel |
 
-### 27.5 Skill Commands
+### 27.6 Skill Commands
 
 | Command | Description |
 |---|---|
 | `axiom skill generate --runtime <runtime>` | Generate skill file for specified runtime |
 
-### 27.6 Index Commands
+### 27.7 Index Commands
 
 | Command | Description |
 |---|---|
 | `axiom index refresh` | Force full re-index of the project |
 | `axiom index query --type <query_type> [--name <symbol>] [--package <pkg>]` | Query the semantic index (structured, not free-form) |
 
-### 27.7 Utility Commands
+### 27.8 Utility Commands
 
 | Command | Description |
 |---|---|
@@ -3003,6 +3214,16 @@ port = 3000
 rate_limit_rpm = 120                       # requests per minute per token
 allowed_ips = []                           # empty = allow all
 
+[cli]
+ui_mode = "auto"                           # auto | tui | plain
+theme = "axiom"
+show_task_rail = true
+prompt_suggestions = true
+persist_sessions = true
+compact_after_messages = 200
+editor_mode = "default"                    # default | vim
+images_enabled = false
+
 [observability]
 log_prompts = false
 log_token_counts = true
@@ -3044,3 +3265,6 @@ log_token_counts = true
 | **Bootstrap Mode** | Orchestrator operating phase during SRS generation with scoped context access — read-only repo-map for existing projects, prompt-only for greenfield projects (see Section 8.7) |
 | **Embedded Mode** | Orchestrator deployment mode where the orchestrator runs inside a Docker container in the Untrusted Agent Plane with all inference through the Inference Broker. Full budget tracking. Used by Claude Code, Codex, OpenCode (see Section 8.2) |
 | **External Client Mode** | Orchestrator deployment mode where the orchestrator connects via REST API with its own inference provider. Partial budget tracking (engine-side actions only). Used by Claw orchestrators (see Section 8.2) |
+| **Session UX Manager** | Trusted-engine component responsible for interactive terminal sessions: startup summaries, transcript persistence, prompt suggestions, mode changes, and slash-command routing (see Section 26.2) |
+| **Axiom TUI** | Full-screen interactive terminal interface built on Bubble Tea, Bubbles, and Lip Gloss. Renders transcript, task rail, approvals, and startup cards from engine-emitted view models (see Section 26.2) |
+| **Startup Summary** | Deterministic engine-authored initial frame shown when the interactive CLI opens. Summarizes workspace state, pending action, and suggested next step before any LLM call is made (see Section 26.2.4) |
