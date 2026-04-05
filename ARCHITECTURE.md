@@ -606,17 +606,39 @@ In embedded mode, the orchestrator SHALL interact with the Trusted Engine exclus
 
 **External Client Contract:**
 
-In external client mode, the orchestrator connects via the REST/WebSocket API (Section 24). The external orchestrator:
+In external client mode, the orchestrator connects via the REST API plus an authenticated control WebSocket (Section 24). The external orchestrator:
 
 - Uses its own inference provider (out-of-band; not brokered by the engine)
-- Submits action requests via the REST API instead of IPC
+- Uses REST only for lifecycle operations and read APIs
+- Uses the control WebSocket for all privileged action requests that require parity with embedded IPC
 - Is subject to API authentication, rate limiting, and audit logging
 - Cannot directly access the filesystem, Docker, git, or SQLite
 - Engine-side actions (Meeseeks spawning, reviews, sub-orchestrators, merges) are still fully brokered and budget-enforced
 
 The key difference: embedded orchestrators have ALL inference tracked; external orchestrators have only engine-side actions tracked. Privileged operations remain engine-exclusive in both modes.
 
-The engine SHALL expose the following request types to the orchestrator (via IPC for embedded, via REST API for external):
+External action requests SHALL use a typed envelope over the control WebSocket:
+
+```json
+{
+    "request_id": "req-123",
+    "idempotency_key": "run-001:create_task:task-042",
+    "type": "create_task",
+    "payload": {
+        "task_id": "task-042"
+    }
+}
+```
+
+The engine SHALL respond with a matching `request_id` and either:
+
+- `accepted`: the request was validated and queued for execution
+- `rejected`: the request was denied with a structured error reason
+- `completed`: for short synchronous operations such as simple queries
+
+Long-running operations (spawn worker, approve output, merge-adjacent actions) SHALL acknowledge immediately and report final results through the normal project event stream. Idempotency keys SHALL ensure reconnect-safe retries for external orchestrators.
+
+The engine SHALL expose the following request types to the orchestrator (via IPC for embedded, via the control WebSocket for external):
 
 | Request Type | Description |
 |---|---|
@@ -632,7 +654,7 @@ The engine SHALL expose the following request types to the orchestrator (via IPC
 | `query_index` | Query the semantic indexer |
 | `query_status` | Get current task tree state |
 | `query_budget` | Get budget status |
-| `request_inference` | Submit an inference request to the broker |
+| `request_inference` | Submit an inference request to the broker for engine-managed inference |
 
 ### 8.7 Bootstrap Mode
 
@@ -809,6 +831,8 @@ Every Meeseeks SHALL emit a `manifest.json` alongside its output files in `/work
 
 Each file entry in `added` and `modified` arrays SHALL include a `binary` flag. Binary files (images, fonts, compiled assets) SHALL additionally include `size_bytes`. Validation skips compilation and linting for binary files but still checks size limits and path validity.
 
+Renames are first-class operations. The engine SHALL preserve both the `from` and `to` paths through validation, audit logging, and artifact tracking. A rename SHALL NOT be degraded into a synthetic delete-plus-add pair in persistent audit records.
+
 The File Router SHALL use this manifest to:
 
 - Handle file deletions and renames (not possible via raw filesystem output alone)
@@ -852,12 +876,15 @@ During execution, a Meeseeks MAY discover it needs to modify files outside its o
 
 1. Meeseeks discovers it needs to modify files outside its declared `target_files` scope.
 2. Meeseeks submits a `request_scope_expansion` IPC message specifying the additional files needed and the reason.
-3. Engine checks: are those files currently locked by another task? Are they reasonable given the task's objective?
-4. If the requested files are available, the engine acquires additional write-set locks for the expanded scope.
-5. Engine notifies the orchestrator of the scope expansion request (the orchestrator MAY approve or deny).
-6. If approved, the Meeseeks continues with the expanded scope. The engine updates the task's `target_files` to include the new paths.
-7. The output manifest MUST include all expanded-scope files. The File Router SHALL validate that expanded-scope files were properly declared.
-8. Every scope expansion is logged in the events table with full details (requesting task, original scope, expanded files, approval decision).
+3. Engine validates that the request is reasonable for the task objective and canonicalizes the requested paths, but SHALL NOT acquire new locks yet.
+4. Engine asks the orchestrator to approve or deny the expansion.
+5. If denied, the engine returns a denial response, acquires no new locks, and records the decision in the events table.
+6. If approved, the engine attempts atomic acquisition of the expanded lock set.
+7. If lock acquisition succeeds, the engine updates the task's `target_files` to include the new paths and the Meeseeks continues with the expanded scope.
+8. If lock acquisition fails, the engine destroys the current Meeseeks container, marks the task as `waiting_on_lock`, records the requested resources in `task_lock_waits`, and re-queues the task when the blocking locks are released.
+9. The replacement Meeseeks receives a FRESH TaskSpec with the expanded scope from the start plus any updated context from the semantic indexer.
+10. The output manifest MUST include all expanded-scope files. The File Router SHALL validate that expanded-scope files were properly declared.
+11. Every scope expansion is logged in the events table with full details (requesting task, original scope, expanded files, approval decision).
 
 If the orchestrator denies the expansion, the Meeseeks SHALL work within its original scope and note the limitation in its output.
 
@@ -866,10 +893,10 @@ If the orchestrator denies the expansion, the Meeseeks SHALL work within its ori
 If the requested files are locked by another active task, the engine SHALL NOT tell the Meeseeks to "work within scope" (LLMs handle mid-flight denials poorly and tend to produce broken output). Instead:
 
 1. Engine destroys the current Meeseeks container immediately.
-2. Engine marks the task as `waiting_on_lock` in SQLite, recording the blocking task ID and the requested expansion files.
+2. Engine marks the task as `waiting_on_lock` in SQLite, recording the blocking task ID and the requested expansion files in `task_lock_waits`.
 3. When the blocking task completes and releases its locks, the engine re-queues the waiting task.
 4. Engine spawns a FRESH Meeseeks with a new TaskSpec that includes the expanded scope from the start (plus any updated context from the semantic indexer reflecting changes made by the blocking task).
-5. This preserves strict freshness, avoids container suspension complexity, and produces better output because the new Meeseeks receives the expanded scope as part of its original TaskSpec.
+5. This preserves strict freshness, avoids container suspension complexity, and keeps all lock waits on the same scheduler path used by initial-dispatch lock conflicts.
 
 Example `request_scope_expansion` IPC message:
 
@@ -1216,6 +1243,8 @@ mem_limit = "4g"
 network = "none"                    # MUST be "none"
 allow_dependency_install = true     # from lockfile only
 security_scan = false               # optional trivy/gosec
+dependency_cache_mode = "prefetch"  # prebuild immutable caches outside validator
+fail_on_cache_miss = true           # never fetch from network during validation
 ```
 
 ### 13.5 Language-Specific Validation Profiles
@@ -1225,11 +1254,22 @@ Each language ecosystem has specific dependency handling requirements for hermet
 | Profile | Dependency Strategy | Special Handling |
 |---|---|---|
 | **Go** | Vendored modules or read-only `GOMODCACHE` | No network needed if vendored |
-| **Node** | `npm ci --ignore-scripts` + read-only `node_modules` cache | Scripts disabled; explicit allowlist if needed |
+| **Node** | Read-only offline package store keyed by lockfile hash, with `npm ci --ignore-scripts --offline` installing into the sandbox overlay | `node_modules` is recreated per run inside the writable overlay; lifecycle scripts stay disabled unless explicitly allowlisted |
 | **Python** | Pre-built wheels in read-only cache, `pip install --no-index --find-links` | No PyPI access |
 | **Rust** | cargo with pre-populated registry + crate cache | Read-only registry |
 
 The engine SHALL detect the project language(s) from configuration and apply the appropriate profile(s) automatically.
+
+**Dependency Cache Preparation:**
+
+Hermetic validation depends on immutable dependency caches that are prepared OUTSIDE the validation sandbox. The engine SHALL:
+
+- Key dependency caches by lockfile hash plus package-manager/toolchain version.
+- Verify cache integrity when the cache is prepared and record that result in metadata.
+- Treat caches as read-only inputs to validation sandboxes.
+- NEVER allow the validation sandbox itself to reach the network to populate a missing cache.
+
+If a required cache is missing, validation SHALL fail with a structured `dependency_cache_miss` result. The task may then be retried only after the engine prepares the cache through an explicit preflight/bootstrap step.
 
 ### 13.6 Integration Sandbox (Opt-In)
 
@@ -1398,9 +1438,39 @@ The orchestrator SHALL decompose the SRS into a hierarchical task tree. The tree
 ### 15.2 Core Schema
 
 ```sql
+-- Projects: durable identity for a repository managed by Axiom
+CREATE TABLE projects (
+    id              TEXT PRIMARY KEY,
+    root_path       TEXT NOT NULL UNIQUE,
+    name            TEXT NOT NULL,
+    slug            TEXT NOT NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Project runs: a single execution of Axiom against a project
+CREATE TABLE project_runs (
+    id                      TEXT PRIMARY KEY,
+    project_id              TEXT NOT NULL REFERENCES projects(id),
+    status                  TEXT NOT NULL,      -- draft_srs | awaiting_srs_approval | active | paused | cancelled | completed | error
+    base_branch             TEXT NOT NULL,
+    work_branch             TEXT NOT NULL,
+    orchestrator_mode       TEXT NOT NULL,      -- embedded | external
+    orchestrator_runtime    TEXT NOT NULL,      -- claw | claude-code | codex | opencode
+    orchestrator_identity   TEXT,
+    srs_approval_delegate   TEXT NOT NULL,      -- user | claw
+    budget_max_usd          REAL NOT NULL,
+    config_snapshot         TEXT NOT NULL,      -- serialized config used for the run
+    srs_hash                TEXT,
+    started_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+    paused_at               DATETIME,
+    cancelled_at            DATETIME,
+    completed_at            DATETIME
+);
+
 -- Tasks: durable identity and metadata
 CREATE TABLE tasks (
     id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES project_runs(id),
     parent_id       TEXT REFERENCES tasks(id),
     title           TEXT NOT NULL,
     description     TEXT,
@@ -1432,6 +1502,7 @@ CREATE TABLE task_target_files (
     task_id     TEXT NOT NULL REFERENCES tasks(id),
     file_path   TEXT NOT NULL,
     lock_scope  TEXT NOT NULL DEFAULT 'file',  -- file | package | module | schema
+    lock_resource_key TEXT NOT NULL,           -- canonical lock key for this file's declared scope
     PRIMARY KEY (task_id, file_path)
 );
 
@@ -1444,6 +1515,15 @@ CREATE TABLE task_locks (
     PRIMARY KEY (resource_type, resource_key)
 );
 
+-- Tasks waiting on locks, whether from initial dispatch or scope expansion
+CREATE TABLE task_lock_waits (
+    task_id              TEXT PRIMARY KEY REFERENCES tasks(id),
+    wait_reason          TEXT NOT NULL,         -- initial_dispatch | scope_expansion
+    requested_resources  TEXT NOT NULL,         -- JSON array of {resource_type, resource_key}
+    blocked_by_task_id   TEXT REFERENCES tasks(id),
+    created_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Individual execution attempts (preserves retry history)
 CREATE TABLE task_attempts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1453,6 +1533,7 @@ CREATE TABLE task_attempts (
     model_family    TEXT NOT NULL,              -- anthropic | openai | meta | local
     base_snapshot   TEXT NOT NULL,              -- git SHA for this attempt
     status          TEXT NOT NULL,              -- running | passed | failed | escalated
+    phase           TEXT NOT NULL DEFAULT 'executing', -- executing | validating | reviewing | awaiting_orchestrator_gate | queued_for_merge | merging | succeeded | failed | escalated
     input_tokens    INTEGER,
     output_tokens   INTEGER,
     cost_usd        REAL DEFAULT 0,
@@ -1489,16 +1570,20 @@ CREATE TABLE review_runs (
 CREATE TABLE task_artifacts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     attempt_id      INTEGER NOT NULL REFERENCES task_attempts(id),
-    file_path       TEXT NOT NULL,
     operation       TEXT NOT NULL,             -- add | modify | delete | rename
-    sha256          TEXT,
-    size_bytes      INTEGER,
+    path_from       TEXT,
+    path_to         TEXT,
+    sha256_before   TEXT,
+    sha256_after    TEXT,
+    size_before     INTEGER,
+    size_after      INTEGER,
     timestamp       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Container sessions
 CREATE TABLE container_sessions (
     id              TEXT PRIMARY KEY,          -- container name
+    run_id          TEXT NOT NULL REFERENCES project_runs(id),
     task_id         TEXT NOT NULL REFERENCES tasks(id),
     container_type  TEXT NOT NULL,             -- meeseeks | reviewer | validator | sub_orchestrator
     image           TEXT NOT NULL,
@@ -1513,6 +1598,7 @@ CREATE TABLE container_sessions (
 -- Event log (full audit trail)
 CREATE TABLE events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES project_runs(id),
     event_type      TEXT NOT NULL,
     task_id         TEXT,
     agent_type      TEXT,                      -- orchestrator | sub_orchestrator | meeseeks | reviewer | engine
@@ -1524,6 +1610,7 @@ CREATE TABLE events (
 -- Cost tracking (aggregated view)
 CREATE TABLE cost_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES project_runs(id),
     task_id         TEXT REFERENCES tasks(id),
     attempt_id      INTEGER REFERENCES task_attempts(id),
     agent_type      TEXT NOT NULL,
@@ -1537,6 +1624,7 @@ CREATE TABLE cost_log (
 -- Engineering Change Orders
 CREATE TABLE eco_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES project_runs(id),
     eco_code        TEXT NOT NULL,             -- ECO-DEP, ECO-API, etc.
     category        TEXT NOT NULL,
     description     TEXT NOT NULL,
@@ -1562,28 +1650,39 @@ db.SetMaxOpenConns(10)
 ### 15.4 Task States
 
 ```
-queued → in_progress → in_review → done
-              │            │
-              ├→ failed    ├→ failed
-              │    │       │    │
-              │    ▼       │    ▼
-              │  queued    │  queued    (via retry or escalation)
-              │            │
-              ├→ blocked   ├→ blocked
-              │
-              └→ waiting_on_lock → queued  (when blocking task releases locks)
+queued → in_progress → done
+  │         │
+  │         ├→ failed → queued   (via retry or escalation)
+  │         └→ blocked
+  │
+  └→ waiting_on_lock → queued    (when blocking task releases locks)
 ```
 
 | State | Description |
 |---|---|
 | `queued` | Task is waiting for dependencies to resolve and a Meeseeks to be assigned. |
-| `in_progress` | A Meeseeks container is actively executing this task. |
-| `in_review` | Meeseeks output has passed automated checks and is being reviewed. |
+| `in_progress` | The current attempt is active somewhere in the execution pipeline: execution, validation, review, orchestrator gate, or merge queue. |
 | `done` | Task has passed all validation and output is committed. |
 | `failed` | Task has failed automated checks or review. Awaiting retry. |
 | `blocked` | Task has exhausted all retries and escalations. Requires orchestrator intervention. |
-| `waiting_on_lock` | Task requires files locked by another active task (via scope expansion). Will be re-queued when locks are released. |
+| `waiting_on_lock` | Task cannot acquire its declared lock set. Used for both initial dispatch conflicts and scope expansion conflicts. |
 | `cancelled_eco` | Task was invalidated by an Engineering Change Order. References the ECO ID in the `eco_ref` field. |
+
+Detailed pipeline progress SHALL be persisted on the current attempt in `task_attempts.phase`:
+
+| Attempt Phase | Description |
+|---|---|
+| `executing` | Meeseeks is actively producing staged output. |
+| `validating` | Output is in the validation sandbox. |
+| `reviewing` | Reviewer is evaluating the output. |
+| `awaiting_orchestrator_gate` | Reviewer approved; orchestrator decision pending. |
+| `queued_for_merge` | Output is approved and waiting in the serialized merge queue. |
+| `merging` | Merge queue is applying output to current HEAD and running integration checks. |
+| `succeeded` | Attempt completed successfully and committed. |
+| `failed` | Attempt failed validation, review, or merge. |
+| `escalated` | Attempt ended because the task moved to a higher model tier. |
+
+Crash recovery SHALL use `task_attempts.phase`, not only `tasks.status`, to determine where unfinished work was interrupted.
 
 When an ECO invalidates existing tasks, those tasks SHALL be marked `cancelled_eco` with the ECO ID stored in the task's `eco_ref` field (see schema in Section 15.2). The orchestrator SHALL create new replacement tasks with fresh IDs that reference the ECO. The original cancelled tasks and their attempt history are preserved for audit purposes. The full chain (original task → ECO → replacement task) SHALL be traceable through the events table.
 
@@ -1634,9 +1733,9 @@ When the engine dispatches a task, it SHALL acquire write-set locks for the file
 
 | Rule | Behavior |
 |---|---|
-| Lock acquisition | Engine locks target file paths in `task_locks` table before spawning Meeseeks |
-| Lock conflict | If a file is already locked by another active task, the new task waits in `queued` |
-| Lock release | Locks released after merge queue commits or task fails |
+| Lock acquisition | Engine acquires the full declared lock set in `task_locks` before spawning Meeseeks |
+| Lock conflict | If any required resource is already locked, the task moves to `waiting_on_lock` and a `task_lock_waits` record is created |
+| Lock release | Locks released after merge queue commits, task failure, cancellation, or explicit scope-denial cleanup |
 | Granularity | File-level by default. Package-level locking available for refactoring tasks |
 
 Write-set locking prevents two Meeseeks from simultaneously modifying the same files, eliminating the most common class of concurrency conflicts.
@@ -1652,14 +1751,14 @@ The lock scope SHALL be determined by the nature of the task's modifications. Th
 | Task modifies API schemas or route contracts | Module-level lock |
 | Task involves database migrations | Schema-level lock |
 
-The `lock_scope` field in `task_target_files` (see Section 15.2) records the declared scope for each target file. The semantic indexer helps identify downstream dependents when package-level or higher locks are required.
+The `lock_scope` and `lock_resource_key` fields in `task_target_files` (see Section 15.2) record the declared scope for each target file. The semantic indexer helps identify downstream dependents when package-level or higher locks are required.
 
 **Deadlock Prevention:**
 
 To prevent deadlocks when multiple tasks require overlapping lock sets:
 
-1. **Deterministic lock acquisition order:** All locks SHALL be acquired in alphabetical order by canonical file path. This prevents circular wait conditions.
-2. **Atomic acquisition:** A task SHALL acquire ALL required locks at once, or acquire none and yield back to the queue. Partial lock acquisition is not permitted. If any required lock is held by another task, the requesting task remains in `queued` status until all locks are available.
+1. **Deterministic lock acquisition order:** All locks SHALL be acquired in alphabetical order by the tuple `(resource_type, resource_key)`. This prevents circular wait conditions for file, package, module, and schema locks alike.
+2. **Atomic acquisition:** A task SHALL acquire ALL required locks at once, or acquire none and yield back to the queue. Partial lock acquisition is not permitted. If any required lock is held by another task, the requesting task transitions to `waiting_on_lock` until all locks are available.
 
 ### 16.4 Serialized Merge Queue
 
@@ -2105,11 +2204,12 @@ All LLM agents (orchestrator, sub-orchestrators, Meeseeks, reviewers) SHALL be s
 On startup, the engine SHALL:
 
 1. **Kill orphaned containers:** Find any `axiom-*` Docker containers from previous sessions and destroy them.
-2. **Reconcile state:** Identify tasks with status `in_progress` or `in_review` that have no running container. Reset these to `queued`.
-3. **Release stale locks:** Remove any write-set locks held by dead containers.
-4. **Clean staging:** Remove any staged files that were not committed.
-5. **Verify SRS integrity:** Check SRS SHA-256 hash matches stored hash.
-6. **Resume:** The orchestrator reads the task tree from SQLite and resumes from the current state.
+2. **Reconcile state:** Identify tasks with status `in_progress` whose current `task_attempts.phase` is non-terminal and that have no running container. Reset these to `queued`.
+3. **Rebuild lock waits:** Re-evaluate tasks in `waiting_on_lock` against the current `task_locks` table. Re-queue tasks whose required locks are now available; preserve the rest in `task_lock_waits`.
+4. **Release stale locks:** Remove any write-set locks held by dead containers.
+5. **Clean staging:** Remove any staged files that were not committed.
+6. **Verify SRS integrity:** Check SRS SHA-256 hash matches stored hash.
+7. **Resume:** The orchestrator reads the task tree from SQLite and resumes from the current state.
 
 ### 22.4 Event Sourcing
 
@@ -2185,7 +2285,7 @@ Axiom SHALL expose a local API server that Claw-based orchestrators can connect 
 
 The Axiom API server SHALL run on the host at port 3000 (configurable). It SHALL expose:
 
-**REST Endpoints:**
+**REST Endpoints (lifecycle + read APIs):**
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -2211,6 +2311,35 @@ The Axiom API server SHALL run on the host at port 3000 (configurable). It SHALL
 | Endpoint | Purpose |
 |---|---|
 | `ws://localhost:3000/ws/projects/:id` | Real-time project events (task completions, reviews, errors, budget warnings, ECO proposals) |
+| `ws://localhost:3000/ws/projects/:id/control` | Authenticated control channel for external orchestrator action requests |
+
+The control WebSocket SHALL carry the same typed action requests defined in Section 8.6. This provides protocol parity between embedded IPC and external orchestration without requiring a separate REST endpoint for every engine action.
+
+**Control Request Envelope:**
+
+```json
+{
+    "request_id": "req-123",
+    "idempotency_key": "run-001:spawn_meeseeks:task-042",
+    "type": "spawn_meeseeks",
+    "payload": {
+        "task_id": "task-042"
+    }
+}
+```
+
+**Control Response Envelope:**
+
+```json
+{
+    "request_id": "req-123",
+    "status": "accepted",
+    "result": null,
+    "error": null
+}
+```
+
+`status` MAY be `accepted`, `rejected`, or `completed`. For long-running actions, final outcome SHALL be delivered through the normal project event stream, keyed by `request_id`.
 
 ### 24.3 Authentication & API Hardening
 
@@ -2227,6 +2356,8 @@ All API requests SHALL include the token in the `Authorization` header:
 Authorization: Bearer axm_sk_<random-token>
 ```
 
+WebSocket connections SHALL authenticate with the same bearer token during the handshake. The event stream WebSocket requires read access; the control WebSocket requires full-control scope.
+
 **Token Management:**
 
 | Feature | Behavior |
@@ -2234,7 +2365,7 @@ Authorization: Bearer axm_sk_<random-token>
 | **Expiration** | Tokens expire after a configurable duration (default: 24 hours). Expired tokens are rejected with `401 Unauthorized`. |
 | **Rotation** | New tokens can be generated at any time. Old tokens remain valid until expiration or explicit revocation. |
 | **Revocation** | `axiom api token revoke <token-id>` immediately invalidates a specific token. |
-| **Scoped tokens** | Tokens MAY be generated with restricted scope: `--scope read-only` (GET endpoints only) or `--scope full-control` (all endpoints). Default is `full-control`. |
+| **Scoped tokens** | Tokens MAY be generated with restricted scope: `--scope read-only` (GET endpoints + event stream WebSocket only) or `--scope full-control` (all endpoints + control WebSocket). Default is `full-control`. |
 
 ```bash
 axiom api token generate --scope read-only --expires 8h
@@ -2607,17 +2738,28 @@ Before including any repository content in a TaskSpec, the engine SHALL run a li
 - Alternatively, the entire file MAY be excluded from external inference context if the secret density is high.
 - The engine SHALL log each redaction event (file, line, pattern matched) without logging the secret value.
 
-**4. Local Model Routing for Sensitive Files:**
+**4. Risk-Based Model Routing for Sensitive Context and Security-Critical Code:**
 
-Tasks touching sensitive files SHALL be forced to BitNet local inference unless the user explicitly approves external inference for that task. This ensures secrets never leave the machine unless the user makes a deliberate choice.
+The engine SHALL distinguish between two different concerns:
+
+- **Secret-bearing context:** files or snippets that contain secrets or likely secrets, even after classification.
+- **Security-critical code:** auth, crypto, IAM, infrastructure, token handling, and other high-assurance code paths that may require stronger reasoning but do not necessarily contain raw secrets.
+
+Routing SHALL follow these rules:
+
+1. If the task context contains unredactable secret-bearing material, the task SHALL use local-only inference.
+2. If the task is security-critical but the relevant context can be safely redacted or excluded, the task MAY use an external model with redacted context, elevated review, and risky-file escalation.
+3. If the user explicitly approves external inference for a secret-bearing task, that approval SHALL be logged in the events table.
+4. Sensitive-path classification alone SHALL NOT force a task onto BitNet if the real issue is code criticality rather than secret exposure.
 
 ```toml
 # .axiom/config.toml
 [security]
-force_local_for_sensitive = true    # default: true
+force_local_for_secret_bearing = true   # default: true
+allow_external_for_redacted_sensitive = true
 ```
 
-Note: In v2.2, BitNet is the only supported local inference backend. Future versions MAY extend this to a broader "local-only inference class" supporting additional local model backends (e.g., larger locally-hosted models via Ollama or similar). The config key and behavior will remain stable; only the set of available local backends will expand.
+Note: In v2.2, BitNet is the only supported local inference backend. Future versions MAY extend this to a broader "local-only inference class" supporting additional local model backends (e.g., larger locally-hosted models via Ollama or similar). The policy remains stable: secret-bearing material stays local unless the user explicitly permits otherwise; security-critical code may use stronger models only when secrets are redacted or excluded.
 
 Users MAY override the local-only routing on a per-task basis by explicitly approving external inference when prompted. The override is logged in the events table for audit.
 
@@ -2635,6 +2777,12 @@ sensitive_patterns = [
     "*credentials*",
     "**/secrets/**",
     "config/production.*"
+]
+security_critical_patterns = [
+    "**/auth/**",
+    "**/crypto/**",
+    "**/migrations/**",
+    ".github/workflows/**"
 ]
 ```
 
@@ -2828,6 +2976,8 @@ mem_limit = "4g"
 network = "none"
 allow_dependency_install = true
 security_scan = false
+dependency_cache_mode = "prefetch"                # build immutable caches before validation
+fail_on_cache_miss = true                        # validator never fetches from network
 warm_pool_enabled = false                      # disabled by default; enable when stable
 warm_pool_size = 3                             # pre-warmed validation containers
 warm_cold_interval = 10                        # full cold build every N warm runs
@@ -2839,8 +2989,10 @@ secrets = []
 network_egress = []
 
 [security]
-force_local_for_sensitive = true           # route sensitive-file tasks to BitNet
+force_local_for_secret_bearing = true      # route secret-bearing context to local-only inference
+allow_external_for_redacted_sensitive = true
 sensitive_patterns = ["*.env*", "*credentials*", "**/secrets/**"]
+security_critical_patterns = ["**/auth/**", "**/crypto/**", "**/migrations/**", ".github/workflows/**"]
 
 [git]
 auto_commit = true
