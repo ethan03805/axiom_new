@@ -387,14 +387,26 @@ Informational: the tunnel runs as a child process of `axiom tunnel start` and is
 
 See [API Server Reference](api-server.md) for the full endpoint and WebSocket documentation.
 
+## Runtime Skill Commands
+
+### `axiom skill generate --runtime <rt>`
+
+Generate deterministic runtime instruction artifacts for the specified orchestrator runtime:
+
+| Runtime | Generated artifacts |
+|---------|---------------------|
+| `claw` | `axiom-skill.md` |
+| `claude-code` | `.claude/CLAUDE.md`, `.claude/settings.json`, `.claude/hooks/axiom-guard.py`, shared `AGENTS.md`, and repo skill files |
+| `codex` | `AGENTS.md`, `codex-instructions.md`, and repo skill files |
+| `opencode` | `AGENTS.md`, `opencode-instructions.md`, `opencode.json`, and repo skill files |
+
+Generated content includes the Axiom workflow, trust boundaries, request types, TaskSpec and ReviewSpec rules, budget policy, ECO flow, communication model, and test-separation requirements.
+
+See [Runtime Skill System Reference](runtime-skills.md) for the full artifact layout, regeneration rules, and runtime-specific enforcement behavior.
+
 ## Stub Commands (Planned for Later Phases)
 
 These commands exist in the CLI surface but delegate to subsystems not yet implemented:
-
-### Skill Commands (Phase 17)
-| Command | Description |
-|---------|-------------|
-| `axiom skill generate --runtime <rt>` | Generate skill file |
 
 ### Utility Commands (Phase 19)
 | Command | Description |

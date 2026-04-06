@@ -150,3 +150,21 @@ max_usd = 20.00
 ```
 
 Result: budget is $20 (project overrides global), runtime is "claude-code" (inherited from global).
+
+## Runtime Skill Regeneration
+
+Phase 17 introduces runtime-specific instruction generation via:
+
+```bash
+axiom skill generate --runtime <claw|claude-code|codex|opencode>
+```
+
+The generated artifacts include values from `.axiom/config.toml`. Re-run the command after changing any of the following:
+
+- `orchestrator.runtime`
+- `api.port`
+- `budget.max_usd`
+- `budget.warn_at_percent`
+- `git.branch_prefix`
+
+See [Runtime Skill System Reference](runtime-skills.md) for the generated file layout.

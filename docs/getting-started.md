@@ -69,6 +69,20 @@ axiom init
 
 The generated `.axiom/config.toml` contains all configuration with architecture defaults. See [Configuration Reference](configuration.md) for details.
 
+## Generate Runtime Instructions
+
+If you want Claude Code, Codex, OpenCode, or a Claw runtime to use Axiom deterministically, generate the runtime instruction artifacts for that runtime:
+
+```bash
+axiom skill generate --runtime codex
+```
+
+This writes runtime-specific instruction files into the repository so the orchestrator is taught to route work through Axiom instead of directly implementing the task itself.
+
+Re-run the command after changing `.axiom/config.toml`, especially `[api].port`, `[budget]`, `[git].branch_prefix`, or the selected orchestrator runtime.
+
+See [Runtime Skill System Reference](runtime-skills.md) for the generated files and per-runtime behavior.
+
 ## Project Structure
 
 After initialization, your project will contain:
@@ -335,9 +349,14 @@ See [API Server Reference](api-server.md) for the full endpoint documentation.
 
 ## What's Next
 
-The following features are planned for later phases:
+Available now:
 
-- `axiom skill generate` — runtime skill generation for orchestrators (Phase 17)
+- `axiom skill generate --runtime <claw|claude-code|codex|opencode>` — generate runtime instruction artifacts that force supported orchestrators to stay inside the Axiom workflow
+
+- [Runtime Skill System Reference](runtime-skills.md) - detailed artifact list, enforcement strategy, and regeneration guidance
+
+Still planned for a later phase:
+
 - `axiom doctor` — system health and dependency checks (Phase 19)
 
 See the [Architecture Document](../ARCHITECTURE.md) and [Implementation Plan](../IMPLEMENTATION_PLAN.md) for the full roadmap.

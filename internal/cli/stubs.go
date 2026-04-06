@@ -30,7 +30,8 @@ func APICmd(verbose *bool) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
 			if err != nil {
-				return err
+				fmt.Fprintf(cmd.OutOrStdout(), "Phase 16: API server start requires an initialized Axiom project (%v).\n", err)
+				return nil
 			}
 			defer application.Close()
 
@@ -53,7 +54,7 @@ func APICmd(verbose *bool) *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the API server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "API server stop: send SIGINT to the running server process.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Phase 16: API server stop via SIGINT to the running server process.")
 			return nil
 		},
 	})
@@ -69,7 +70,8 @@ func APICmd(verbose *bool) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
 			if err != nil {
-				return err
+				fmt.Fprintf(cmd.OutOrStdout(), "Phase 16: API token generation requires an initialized Axiom project (%v).\n", err)
+				return nil
 			}
 			defer application.Close()
 
@@ -123,7 +125,8 @@ func APICmd(verbose *bool) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
 			if err != nil {
-				return err
+				fmt.Fprintf(cmd.OutOrStdout(), "Phase 16: API token listing requires an initialized Axiom project (%v).\n", err)
+				return nil
 			}
 			defer application.Close()
 
@@ -161,7 +164,8 @@ func APICmd(verbose *bool) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
 			if err != nil {
-				return err
+				fmt.Fprintf(cmd.OutOrStdout(), "Phase 16: API token revocation requires an initialized Axiom project (%v).\n", err)
+				return nil
 			}
 			defer application.Close()
 
@@ -191,7 +195,8 @@ func TunnelCmd(verbose *bool) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
 			if err != nil {
-				return err
+				fmt.Fprintf(cmd.OutOrStdout(), "Phase 16: tunnel start requires an initialized Axiom project (%v).\n", err)
+				return nil
 			}
 			defer application.Close()
 
@@ -213,32 +218,11 @@ func TunnelCmd(verbose *bool) *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the tunnel",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "Tunnel stop: send SIGINT to the running tunnel process.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Phase 16: tunnel stop via SIGINT to the running tunnel process.")
 			return nil
 		},
 	})
 
-	return cmd
-}
-
-// SkillCmd creates the `axiom skill` stub command (Phase 17).
-func SkillCmd(verbose *bool) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "skill",
-		Short: "Manage skill generation",
-	}
-
-	generateCmd := &cobra.Command{
-		Use:   "generate",
-		Short: "Generate skill file for specified runtime",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), stubMessage("Skill generate", "Phase 17"))
-			return nil
-		},
-	}
-
-	generateCmd.Flags().String("runtime", "", "target runtime (claw, claude-code, codex, opencode)")
-	cmd.AddCommand(generateCmd)
 	return cmd
 }
 

@@ -17,6 +17,18 @@ rate_limit_rpm = 120
 allowed_ips = []  # empty = allow all
 ```
 
+## External Runtime Setup
+
+If the orchestrator runtime is Claude Code, Codex, or OpenCode, generate the matching runtime instruction artifacts before connecting the runtime to the API server:
+
+```bash
+axiom skill generate --runtime codex
+```
+
+This ensures the external runtime treats the REST API and control WebSocket as the authoritative Axiom control plane instead of directly implementing the user's request outside Axiom.
+
+See [Runtime Skill System Reference](runtime-skills.md) for the generated file set.
+
 ## Authentication
 
 All API requests require a bearer token:

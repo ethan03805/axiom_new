@@ -109,7 +109,7 @@ axiom/
 │   ├── testgen/            # Test-generation separation and convergence logic (Phase 13)
 │   │   └── testgen.go      # Service, CreateTestTask, GetExcludeFamily, HandleTestFailure, CheckConvergence, MarkConverged, MarkBlocked, IsFeatureDone
 │   │
-│   ├── cli/                # Plain CLI command surface (Phase 14) + session/TUI commands (Phase 15)
+│   ├── cli/                # Plain CLI command surface (Phase 14) + session/TUI commands (Phase 15) + skill generation (Phase 17)
 │   │   ├── commands.go     # Commands() registry — returns all CLI commands
 │   │   ├── helpers.go      # Shared helpers (findProjectID, findActiveRun, openApp)
 │   │   ├── run.go          # axiom run, pause, resume, cancel
@@ -117,8 +117,12 @@ axiom/
 │   │   ├── models.go       # axiom models refresh/list/info
 │   │   ├── bitnet.go       # axiom bitnet start/stop/status/models
 │   │   ├── index.go        # axiom index refresh/query
+│   │   ├── skill.go        # axiom skill generate (Phase 17)
 │   │   ├── session.go      # axiom session list/resume/export, axiom tui (Phase 15)
-│   │   └── stubs.go        # API/tunnel commands (Phase 16) + stubs for skill (Phase 17), doctor (Phase 19)
+│   │   └── stubs.go        # API/tunnel commands (Phase 16) + doctor stub (Phase 19)
+│   │
+│   ├── skill/              # Runtime skill generation (Phase 17)
+│   │   └── generator.go    # Runtime artifact generator for claw, claude-code, codex, and opencode
 │   │
 │   ├── session/            # Session UX Manager (Phase 15)
 │   │   └── manager.go      # Manager: create/resume sessions, mode transitions, startup summary, transcript, compaction, export, suggestions
@@ -301,7 +305,8 @@ Current test coverage by package:
 | `internal/mergequeue` | 20 | Empty queue (1), queue length (1), clean merge (2), stale snapshot (2), integration failure (2), file operations (2), serialization (1), events (3), commit failure (1), indexer failure (1), affected files (1), git staging (1), file revert (2), context cancellation (1) |
 | `internal/session` | 19 | Session create/resume (4), mode determination (5), startup summary (2), transcript (1), compaction (1), export (2), suggestions (2), events (1), input history (1) |
 | `internal/tui` | 29 | Model creation (2), view rendering (3), input handling (2), slash commands (6), overlay (1), status bar (1), task rail (1), window resize (1), transcript (1), submit input (2), plain renderer (7) |
-| `internal/cli` | 58 | Command registration (7), run actions (15), export (5), models (7), bitnet (6), index (11), session commands (7: list with/without sessions, export, resume found/not-found, TUI plain flag/mode), stubs (10: api/tunnel/skill/doctor existence + phase messages). Note: Phase 16 replaced API/tunnel stubs with real implementations; 6 stubs tests now expect updated assertions. |
+| `internal/cli` | 80 | Command registration (12), run actions (18), export (5), models (7), bitnet (6), index (11), session commands (7), skill commands (2), stubs/API+tunnel compatibility messages (12) |
+| `internal/skill` | 4 | Runtime-specific artifact generation for claw, claude-code, codex, and opencode; config-sensitive regeneration; runtime-native guardrails; invalid runtime rejection |
 | `internal/api` | 49 | Auth (10: valid/invalid/expired/revoked/bad-prefix/scopes/generation/hashing), rate limiting (6: under/over/per-token/disabled/IP-allowlist), handlers (11: status/tasks/attempts/costs/events/models/pause/resume/cancel/SRS/tokens), WebSocket (4: event-stream/control/invalid-type/idempotency), server (6: start-stop/auth-required/authed-request/audit/health/IP), tunnel (3: construct/stop/URL) |
 
 ### Test Patterns
@@ -417,7 +422,7 @@ See [API Server Reference](api-server.md) for the full endpoint documentation.
 
 Phase 14 implemented the plain CLI command surface per Architecture Section 27, making the engine fully operable without the full-screen TUI:
 
-- **CLI package** (`cli/`) — New `internal/cli/` package with `Commands()` entry point returning all CLI commands for registration. Commands are split into separate files by domain: `run.go` (project lifecycle), `export.go` (JSON export), `models.go` (model registry), `bitnet.go` (BitNet server), `index.go` (semantic indexer), `stubs.go` (future-phase placeholders). Shared helpers in `helpers.go` provide `findProjectID` (lookup project by root path), `findActiveRun` (lookup active run for a project), and `openApp` (create App from cwd).
+- **CLI package** (`cli/`) — New `internal/cli/` package with `Commands()` entry point returning all CLI commands for registration. Commands are split into separate files by domain: `run.go` (project lifecycle), `export.go` (JSON export), `models.go` (model registry), `bitnet.go` (BitNet server), `index.go` (semantic indexer), `skill.go` (runtime skill generation), `session.go` (interactive session commands), and `stubs.go` (remaining later-phase placeholders such as `doctor`). Shared helpers in `helpers.go` provide `findProjectID` (lookup project by root path), `findActiveRun` (lookup active run for a project), and `openApp` (create App from cwd).
 
 - **Project lifecycle commands** (`cli/run.go`) — Four commands wired to engine methods:
   - `axiom run "<prompt>" [--budget <usd>]` — creates a project run in `draft_srs` status using `engine.CreateRun`, defaults budget to config value, prints run ID/status/branch/budget
@@ -441,9 +446,14 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
   - `axiom index refresh` — performs full project re-index via `Indexer.Index`
   - `axiom index query --type <type> [--name <name>] [--package <pkg>]` — supports all five Architecture Section 17.5 query types with parameter validation (lookup_symbol/reverse_dependencies/find_implementations require `--name`, list_exports requires `--package`)
 
-- **Stub commands** (`cli/stubs.go`) — Section 27 commands that depend on subsystems from later phases exist as stubs returning informational messages:
+- **Skill generation command** (`cli/skill.go`, `skill/generator.go`) — `axiom skill generate --runtime <rt>` now writes runtime-specific instruction artifacts for `claw`, `claude-code`, `codex`, and `opencode`.
+  - Output is config-aware and should be re-run after relevant `.axiom/config.toml` changes.
+  - Shared content covers workflow, trust boundaries, request types, TaskSpec and ReviewSpec rules, budget policy, ECO handling, communication rules, and test authorship separation.
+  - Runtime-native companion files are generated where they improve adherence: Claude Code gets `.claude/CLAUDE.md` plus hooks, Codex/OpenCode get `AGENTS.md`, and OpenCode gets `opencode.json`.
+  - The dedicated package is `internal/skill/`, and the operator-facing reference is [Runtime Skill System Reference](runtime-skills.md).
+
+- **Stub commands** (`cli/stubs.go`) — Section 27 commands that still depend on later phases return informational messages:
   - ~~`axiom api start/stop`, `axiom api token generate [--scope]/list/revoke`, `axiom tunnel start/stop`~~ — fully implemented in Phase 16
-  - `axiom skill generate --runtime <rt>` — Phase 17
   - `axiom doctor` — Phase 19
   - Note: `axiom tui`, `axiom session` were stubs in Phase 14 but are now fully implemented (Phase 15).
 
@@ -451,21 +461,24 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
 
 - **Main.go integration** — `cmd/axiom/main.go` registers all commands via `cli.Commands(&verbose)` loop. Pre-existing `version`, `init`, and `status` commands remain in main.go.
 
-- **Test coverage** — 67 tests across 7 test files:
-  - `cli_test.go` (7) — command registration tests verifying all Section 27 command groups and subcommand trees exist
-  - `run_test.go` (15) — run creation, budget defaults, pause/resume/cancel state transitions, error cases, event emission, helper functions
+- **Test coverage** — 80 CLI tests plus 4 skill-generator tests:
+  - `cli_test.go` (12) — command registration tests verifying command groups and subcommand trees
+  - `run_test.go` (18) — run creation, budget defaults, pause/resume/cancel state transitions, error cases, event emission, helper functions
   - `export_test.go` (5) — JSON output with no run, active run, tasks, indentation, project root inclusion
   - `models_test.go` (7) — refresh, list all, filter by tier/family, no results, info, not found
   - `bitnet_test.go` (6) — status, endpoint, start/stop guards, models, disabled config
   - `index_test.go` (11) — refresh, all 5 query types, invalid type, 4 required parameter validations
-  - `stubs_test.go` (16) — all stub commands exist and return phase-appropriate messages
+  - `session_test.go` (7) — session list/export/resume and TUI plain-mode command behavior
+  - `skill_test.go` (2) — runtime skill CLI generation and invalid runtime handling
+  - `stubs_test.go` (12) — API/tunnel/doctor compatibility messages and command existence
+  - `generator_test.go` (4) — artifact generation, config-sensitive regeneration, runtime-native guardrails, invalid runtime rejection
 
 - **Resolved deferred items from prior phases:**
   - `axiom run "<prompt>"` CLI wiring (was deferred from Phase 9)
   - `axiom models` and `axiom bitnet` CLI wiring (was deferred from Phase 7)
   - `axiom index refresh` CLI wiring (was deferred from Phase 8)
 
-See [CLI Reference](cli-reference.md) for the full command documentation.
+See [CLI Reference](cli-reference.md) and [Runtime Skill System Reference](runtime-skills.md) for the full command and artifact documentation.
 
 ### Phase 15 Summary
 
