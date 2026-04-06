@@ -130,10 +130,10 @@ Individual execution attempts preserving retry history.
 | `base_snapshot` | TEXT | NOT NULL | Git SHA for this attempt |
 | `status` | TEXT | NOT NULL | running, passed, failed, escalated |
 | `phase` | TEXT | NOT NULL DEFAULT 'executing' | executing, validating, reviewing, awaiting_orchestrator_gate, queued_for_merge, merging, succeeded, failed, escalated |
-| `input_tokens` | INTEGER | | |
-| `output_tokens` | INTEGER | | |
-| `cost_usd` | REAL | DEFAULT 0 | |
-| `failure_reason` | TEXT | | |
+| `input_tokens` | INTEGER | | Prompt tokens recorded after successful inference |
+| `output_tokens` | INTEGER | | Completion tokens recorded after successful inference |
+| `cost_usd` | REAL | DEFAULT 0 | Actual inference cost recorded for the attempt |
+| `failure_reason` | TEXT | | Terminal failure detail, including recovery markers |
 | `feedback` | TEXT | | Feedback for retry |
 | `started_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | |
 | `completed_at` | DATETIME | | |
@@ -204,6 +204,8 @@ Full audit trail of all system activity.
 | `details` | TEXT | | JSON payload |
 | `timestamp` | DATETIME | DEFAULT CURRENT_TIMESTAMP | |
 
+The physical table requires `run_id`; startup-only diagnostic events without a run context are fanned out in-memory but are not persisted.
+
 #### `cost_log`
 Inference cost tracking per request.
 
@@ -219,6 +221,8 @@ Inference cost tracking per request.
 | `output_tokens` | INTEGER | | |
 | `cost_usd` | REAL | NOT NULL | |
 | `timestamp` | DATETIME | DEFAULT CURRENT_TIMESTAMP | |
+
+Prompt logs are stored on disk under `.axiom/logs/prompts/` rather than in SQLite.
 
 #### `eco_log`
 Engineering Change Order records.

@@ -125,6 +125,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	e.workers = NewWorkerPool(e.ctx, e.log)
 
+	if _, err := e.Recover(e.ctx); err != nil {
+		e.cancel()
+		return err
+	}
+
 	e.workers.Register("scheduler", e.schedulerLoop, 500*time.Millisecond)
 	e.workers.Register("merge-queue", e.mergeQueueLoop, 500*time.Millisecond)
 	// Future phases will register additional workers:

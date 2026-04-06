@@ -68,7 +68,9 @@ func (b *Bus) Publish(ev EngineEvent) error {
 	}
 
 	// Persist authoritative events to SQLite
-	if !IsViewModelEvent(ev.Type) {
+	// Some phase-19 diagnostics are emitted before any run exists; those are
+	// fanned out only and intentionally skipped from persistence.
+	if !IsViewModelEvent(ev.Type) && ev.RunID != "" {
 		if err := b.persist(ev); err != nil {
 			b.log.Error("failed to persist event", "type", ev.Type, "error", err)
 			return err

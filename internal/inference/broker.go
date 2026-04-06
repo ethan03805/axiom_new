@@ -10,6 +10,7 @@ import (
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/engine"
 	"github.com/openaxiom/axiom/internal/events"
+	"github.com/openaxiom/axiom/internal/observability"
 	"github.com/openaxiom/axiom/internal/security"
 	"github.com/openaxiom/axiom/internal/state"
 )
@@ -34,14 +35,13 @@ type BrokerConfig struct {
 	Log           *slog.Logger
 	CloudProvider Provider
 	LocalProvider Provider
-	ModelPricing  map[string]ModelPricing // model_id → pricing
-	ModelTiers    map[string]string       // model_id → tier name
+	ModelPricing  map[string]ModelPricing
+	ModelTiers    map[string]string
+	PromptLogger  *observability.PromptLogger
 }
 
 // Broker is the central inference brokering service per Architecture Section 19.5.
-// It implements engine.InferenceService and mediates ALL model API calls.
-// Containers submit requests via IPC; the broker validates, routes, executes,
-// and logs every request.
+// It implements engine.InferenceService and mediates all model API calls.
 type Broker struct {
 	cfg          *config.Config
 	db           *state.DB
@@ -54,6 +54,7 @@ type Broker struct {
 	budget       *BudgetEnforcer
 	rateLimiter  *RateLimiter
 	security     *security.Policy
+	promptLogger *observability.PromptLogger
 }
 
 // NewBroker creates a Broker from its configuration and dependencies.
@@ -70,6 +71,7 @@ func NewBroker(bc BrokerConfig) *Broker {
 		budget:       NewBudgetEnforcer(bc.Config.Budget.MaxUSD, bc.Config.Budget.WarnAtPercent),
 		rateLimiter:  NewRateLimiter(bc.Config.Inference.MaxRequestsTask),
 		security:     security.NewPolicy(bc.Config.Security),
+		promptLogger: bc.PromptLogger,
 	}
 }
 
@@ -86,19 +88,13 @@ func (b *Broker) Available() bool {
 }
 
 // Infer validates, routes, executes, and logs an inference request.
-// This is the single entry point for all model access in the engine.
-// Per Architecture Section 19.5, the broker enforces:
-//  1. Model allowlist (requested model must be in task's allowed tier)
-//  2. Budget pre-authorization (max_tokens * pricing <= remaining budget)
-//  3. Per-task rate limits (default 50 requests per task)
-//  4. Token cap enforcement
 func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engine.InferenceResponse, error) {
-	// --- 1. Token cap check ---
+	// 1. Token cap check.
 	if req.MaxTokens > b.cfg.Inference.TokenCapPerReq {
 		return nil, ErrTokenCapExceeded
 	}
 
-	// --- 2. Prompt safety analysis and routing ---
+	// 2. Prompt safety analysis and routing.
 	sanitizedMessages, analysis := b.prepareMessages(req)
 	effectiveReq := req
 	effectiveTier := req.Tier
@@ -123,7 +119,7 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		b.emitSecurityOverride(req, analysis.SecurityCritical)
 	}
 
-	// --- 3. Model allowlist + tier check ---
+	// 3. Model allowlist + tier check.
 	modelTier, known := b.modelTiers[effectiveReq.ModelID]
 	if !known {
 		return nil, ErrModelNotAllowed
@@ -132,18 +128,18 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		return nil, ErrModelNotAllowed
 	}
 
-	// --- 4. Budget pre-authorization ---
+	// 4. Budget pre-authorization.
 	pricing := b.modelPricing[effectiveReq.ModelID]
 	if err := b.budget.Authorize(req.MaxTokens, pricing); err != nil {
 		return nil, err
 	}
 
-	// --- 5. Rate limit check ---
+	// 5. Rate limit check.
 	if err := b.rateLimiter.Allow(req.TaskID); err != nil {
 		return nil, err
 	}
 
-	// --- 6. Build provider request ---
+	// 6. Build provider request.
 	provReq := ProviderRequest{
 		Model:              effectiveReq.ModelID,
 		Messages:           sanitizedMessages,
@@ -152,7 +148,7 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		GrammarConstraints: req.GrammarConstraints,
 	}
 
-	// --- 7. Emit inference_requested event ---
+	// 7. Emit inference_requested event.
 	b.bus.Publish(events.EngineEvent{
 		Type:      events.InferenceRequested,
 		RunID:     req.RunID,
@@ -168,7 +164,7 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		},
 	})
 
-	// --- 8. Route to provider ---
+	// 8. Route to provider.
 	provider, err := b.selectProvider(ctx, modelTier)
 	if err != nil {
 		b.emitProviderUnavailable(req, modelTier)
@@ -176,7 +172,7 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		return nil, err
 	}
 
-	// --- 9. Execute request ---
+	// 9. Execute request.
 	startTime := time.Now()
 	provResp, err := provider.Complete(ctx, provReq)
 	latencyMs := time.Since(startTime).Milliseconds()
@@ -185,21 +181,25 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		return nil, fmt.Errorf("inference: provider %s: %w", provider.Name(), err)
 	}
 
-	// --- 10. Calculate actual cost ---
+	// 10. Calculate actual cost.
 	actualCost := float64(provResp.InputTokens)*pricing.PromptCostPerToken +
 		float64(provResp.OutputTokens)*pricing.CompletionCostPerToken
 
-	// --- 11. Record cost in budget tracker ---
+	// 11. Record cost in budget tracker.
 	b.budget.Record(actualCost)
 
-	// --- 12. Log cost to database ---
+	// 12. Log cost to database and attempt metrics.
 	effectiveReq.Tier = effectiveTier
 	b.logCost(effectiveReq, provResp, actualCost)
+	b.updateAttemptMetrics(effectiveReq.AttemptID, provResp, actualCost)
 
-	// --- 13. Emit completion event ---
+	// 13. Persist prompt log if enabled.
+	b.writePromptLog(effectiveReq, provReq, provResp, provider.Name(), actualCost, latencyMs)
+
+	// 14. Emit completion event.
 	b.emitInferenceCompleted(effectiveReq, provResp, provider.Name(), actualCost, latencyMs)
 
-	// --- 14. Check budget warning/exceeded thresholds ---
+	// 15. Check budget warning/exceeded thresholds.
 	if b.budget.Exceeded() {
 		b.bus.Publish(events.EngineEvent{
 			Type:    events.BudgetExceeded,
@@ -233,8 +233,7 @@ type requestAnalysis struct {
 	SecurityCritical bool
 }
 
-// buildMessages converts engine request to provider messages and applies prompt-safety redaction.
-// Messages field takes precedence over legacy Prompt field.
+// prepareMessages converts the engine request to provider messages and applies prompt-safety redaction.
 func (b *Broker) prepareMessages(req engine.InferenceRequest) ([]Message, requestAnalysis) {
 	var (
 		msgs     []Message
@@ -266,8 +265,6 @@ func (b *Broker) prepareMessages(req engine.InferenceRequest) ([]Message, reques
 }
 
 // selectProvider picks the right provider based on model tier and availability.
-// Local-tier tasks always use BitNet. Other tiers prefer cloud but fall back
-// to local for local-eligible models when cloud is down.
 func (b *Broker) selectProvider(ctx context.Context, modelTier string) (Provider, error) {
 	if modelTier == "local" {
 		if b.local != nil && b.local.Available(ctx) {
@@ -276,17 +273,14 @@ func (b *Broker) selectProvider(ctx context.Context, modelTier string) (Provider
 		return nil, ErrProviderDown
 	}
 
-	// Cloud tiers: try cloud first
 	if b.cloud != nil && b.cloud.Available(ctx) {
 		return b.cloud, nil
 	}
 
-	// Cloud down — no fallback for non-local tiers
 	return nil, ErrProviderDown
 }
 
 // tierAllowed checks whether a model at modelTier is usable by a task at taskTier.
-// A task can use models at its tier or below.
 func tierAllowed(taskTier, modelTier string) bool {
 	tl, tok := tierOrder[taskTier]
 	ml, mok := tierOrder[modelTier]
@@ -335,6 +329,65 @@ func (b *Broker) logCost(req engine.InferenceRequest, resp *ProviderResponse, co
 	}
 }
 
+func (b *Broker) updateAttemptMetrics(attemptID int64, resp *ProviderResponse, costUSD float64) {
+	if attemptID <= 0 {
+		return
+	}
+
+	_, err := b.db.Exec(`UPDATE task_attempts
+		SET input_tokens = ?, output_tokens = ?, cost_usd = ?
+		WHERE id = ?`,
+		resp.InputTokens, resp.OutputTokens, costUSD, attemptID)
+	if err != nil {
+		b.log.Error("failed to update attempt metrics", "attempt_id", attemptID, "error", err)
+	}
+}
+
+func (b *Broker) writePromptLog(req engine.InferenceRequest, provReq ProviderRequest, resp *ProviderResponse, providerName string, costUSD float64, latencyMs int64) {
+	if b.promptLogger == nil || !b.promptLogger.Enabled() {
+		return
+	}
+
+	messages := make([]observability.Message, len(provReq.Messages))
+	for i, msg := range provReq.Messages {
+		messages[i] = observability.Message{Role: msg.Role, Content: msg.Content}
+	}
+
+	path, err := b.promptLogger.Write(observability.Entry{
+		RunID:              req.RunID,
+		TaskID:             req.TaskID,
+		AttemptID:          req.AttemptID,
+		ModelID:            provReq.Model,
+		Provider:           providerName,
+		MaxTokens:          provReq.MaxTokens,
+		Temperature:        provReq.Temperature,
+		GrammarConstraints: provReq.GrammarConstraints,
+		Messages:           messages,
+		Response:           resp.Content,
+		FinishReason:       resp.FinishReason,
+		InputTokens:        resp.InputTokens,
+		OutputTokens:       resp.OutputTokens,
+		CostUSD:            costUSD,
+		LatencyMs:          latencyMs,
+	})
+	if err != nil {
+		b.log.Error("failed to persist prompt log", "task_id", req.TaskID, "attempt_id", req.AttemptID, "error", err)
+		b.emitDiagnosticWarning(req.RunID, req.TaskID, req.AgentType, "prompt_log_write_failed", err.Error())
+		return
+	}
+
+	b.bus.Publish(events.EngineEvent{
+		Type:      events.PromptLogged,
+		RunID:     req.RunID,
+		TaskID:    req.TaskID,
+		AgentType: req.AgentType,
+		Timestamp: time.Now().UTC(),
+		Details: map[string]any{
+			"path": path,
+		},
+	})
+}
+
 func (b *Broker) emitInferenceCompleted(req engine.InferenceRequest, resp *ProviderResponse, providerName string, cost float64, latencyMs int64) {
 	b.bus.Publish(events.EngineEvent{
 		Type:      events.InferenceCompleted,
@@ -375,6 +428,20 @@ func (b *Broker) emitInferenceFailed(req engine.InferenceRequest, err error) {
 		Details: map[string]any{
 			"model_id": req.ModelID,
 			"error":    err.Error(),
+		},
+	})
+}
+
+func (b *Broker) emitDiagnosticWarning(runID, taskID, agentType, code, message string) {
+	b.bus.Publish(events.EngineEvent{
+		Type:      events.DiagnosticWarning,
+		RunID:     runID,
+		TaskID:    taskID,
+		AgentType: agentType,
+		Timestamp: time.Now().UTC(),
+		Details: map[string]any{
+			"code":    code,
+			"message": message,
 		},
 	})
 }

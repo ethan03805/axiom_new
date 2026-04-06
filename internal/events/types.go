@@ -57,6 +57,12 @@ const (
 	SecurityRedaction        EventType = "security_redaction"
 	SecurityOverrideApproved EventType = "security_override_approved"
 	SecurityLocalRouted      EventType = "security_local_routed"
+	PromptLogged             EventType = "prompt_logged"
+
+	RecoveryStarted   EventType = "recovery_started"
+	RecoveryCompleted EventType = "recovery_completed"
+	DiagnosticWarning EventType = "diagnostic_warning"
+	ResourceWarning   EventType = "resource_warning"
 )
 
 // --- View-model events (fanned out to subscribers, NOT persisted) ---

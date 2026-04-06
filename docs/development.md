@@ -119,7 +119,7 @@ axiom/
 │   │   ├── index.go        # axiom index refresh/query
 │   │   ├── skill.go        # axiom skill generate (Phase 17)
 │   │   ├── session.go      # axiom session list/resume/export, axiom tui (Phase 15)
-│   │   └── stubs.go        # API/tunnel commands (Phase 16) + doctor stub (Phase 19)
+│   │   └── stubs.go        # API/tunnel compatibility placeholders
 │   │
 │   ├── skill/              # Runtime skill generation (Phase 17)
 │   │   └── generator.go    # Runtime artifact generator for claw, claude-code, codex, and opencode
@@ -148,7 +148,6 @@ axiom/
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
-│   ├── doctor/             # System health checks
 │   ├── orchestrator/       # Orchestrator lifecycle management
 ├── migrations/             # (Legacy location — migrations are now embedded)
 ├── testdata/               # Test fixture data
@@ -160,6 +159,8 @@ axiom/
 ├── ARCHITECTURE.md         # System architecture document
 └── IMPLEMENTATION_PLAN.md  # Phase-by-phase implementation plan
 ```
+
+Phase 19 adds `internal/cli/doctor.go`, `internal/doctor/`, and `internal/observability/` on top of the tree above.
 
 ## Technology Choices
 
@@ -295,9 +296,9 @@ Current test coverage by package:
 | `internal/gitops` | 38 | Branch management (8), snapshots (2), dirty/clean checks (6), commit formatting (3), add/commit (4), diffs (6), setup work branch (3), cancel cleanup (3), exit criteria (2), architecture compliance (1) |
 | `internal/ipc` | 24 | Message types (6), envelope serialization (4), directory management (6), spec writers (5), message read/write (3) |
 | `internal/container` | 17 | Container naming (2), hardening flags (7), start/stop lifecycle (4), list/cleanup (3), interface compliance (1) |
-| `internal/inference` | 51 | Budget enforcer (11), rate limiter (6), OpenRouter provider (11), BitNet provider (7), broker integration (16) |
+| `internal/inference` | 59 | Budget enforcer (11), rate limiter (6), OpenRouter provider (11), BitNet provider (7), broker integration (24) |
 | `internal/models` | 19 | Shipped loader (3), OpenRouter fetcher (2), BitNet scanner (2), registry service (7), merge enrichment (1), combined filtering (1), broker maps (1), performance preservation (1), adapter (1) |
-| `internal/bitnet` | 11 | Service creation (1), status up/down (2), model listing (2), enabled/disabled (1), base URL (1), start/stop guards (2), weight dir (1), status fields (1) |
+| `internal/bitnet` | 14 | Service creation (1), status up/down (2), model listing (2), enabled/disabled (1), base URL (1), managed start/stop lifecycle (4), weight dir (1), status fields (2) |
 | `internal/index` | 24 | Full indexing (3), incremental indexing (2), exclusion rules (2), lookup_symbol (6), reverse_dependencies (1), list_exports (2), find_implementations (1), module_graph (2), multi-language (4), edge cases (3) |
 | `internal/task` | 24 | Single creation (5), batch creation (7), retry (2), escalation (3), blocking (1), HandleTaskFailure routing (3), scope expansion (2), per-tier counting (1) |
 | `internal/scheduler` | 15 | Dispatch ready tasks (3), lock acquisition (2), lock conflicts (2), concurrency limits (2), lock waiter processing (2), lock ordering (1), edge cases (3) |
@@ -307,7 +308,8 @@ Current test coverage by package:
 | `internal/mergequeue` | 20 | Empty queue (1), queue length (1), clean merge (2), stale snapshot (2), integration failure (2), file operations (2), serialization (1), events (3), commit failure (1), indexer failure (1), affected files (1), git staging (1), file revert (2), context cancellation (1) |
 | `internal/session` | 19 | Session create/resume (4), mode determination (5), startup summary (2), transcript (1), compaction (1), export (2), suggestions (2), events (1), input history (1) |
 | `internal/tui` | 29 | Model creation (2), view rendering (3), input handling (2), slash commands (6), overlay (1), status bar (1), task rail (1), window resize (1), transcript (1), submit input (2), plain renderer (7) |
-| `internal/cli` | 80 | Command registration (12), run actions (18), export (5), models (7), bitnet (6), index (11), session commands (7), skill commands (2), stubs/API+tunnel compatibility messages (12) |
+| `internal/cli` | 80 | Command registration (12), run actions (18), export (5), models (7), bitnet (6), index (11), session commands (7), skill commands (2), API/tunnel compatibility plus doctor command coverage (12) |
+| `internal/doctor` | 2 | Dependency failure reporting, resource-pressure warning, cache readiness, secret-scanner checks |
 | `internal/skill` | 4 | Runtime-specific artifact generation for claw, claude-code, codex, and opencode; config-sensitive regeneration; runtime-native guardrails; invalid runtime rejection |
 | `internal/api` | 49 | Auth (10: valid/invalid/expired/revoked/bad-prefix/scopes/generation/hashing), rate limiting (6: under/over/per-token/disabled/IP-allowlist), handlers (11: status/tasks/attempts/costs/events/models/pause/resume/cancel/SRS/tokens), WebSocket (4: event-stream/control/invalid-type/idempotency), server (6: start-stop/auth-required/authed-request/audit/health/IP), tunnel (3: construct/stop/URL) |
 
@@ -364,7 +366,22 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 16 | API Server, WebSockets, and Tunnel Support | Complete |
 | 17 | Runtime Skill Generation | Complete |
 | 18 | Security, Secret Handling, and Prompt Safety | Complete |
-| 19-20 | Remaining phases | Not started |
+| 19 | Crash Recovery, Diagnostics, and Hardening | Complete |
+| 20 | Stabilization, Test Matrix, and Release Packaging | Not started |
+
+### Phase 19 Summary
+
+Phase 19 implemented the restart-hardening and operator diagnostics layer from Architecture Sections 22.3, 27, 29.6, and 31:
+
+- **Startup recovery** (`engine/recovery.go`, `engine/engine.go`, `app/app.go`) - Engine startup now performs orphan container cleanup, stale attempt/task recovery, lock release and wait rebuild, staging cleanup, and SRS hash verification before workers begin processing.
+
+- **Prompt logging and diagnostics** (`observability/promptlog.go`, `inference/broker.go`, `events/types.go`, `events/bus.go`) - Sanitized prompt logs are persisted under `.axiom/logs/prompts/` when enabled, attempt token/cost metrics are updated after inference, and new recovery/diagnostic event types are emitted without breaking subscriber fan-out when no run context exists yet.
+
+- **Doctor command** (`doctor/doctor.go`, `cli/doctor.go`) - `axiom doctor` is now a real command that checks Docker, BitNet availability/configuration, provider reachability, local resource pressure, cache readiness, and secret-scanner initialization. It can run both inside and outside a project.
+
+- **Managed BitNet lifecycle** (`bitnet/service.go`) - BitNet can now be launched and stopped by Axiom when `[bitnet].command` is configured, with persisted process state, health polling, and explicit fallback to manual setup when no managed command is configured.
+
+- **Config and discovery hardening** (`config/config.go`, `project/project.go`) - Layered config now correctly merges observability and BitNet overrides, missing config files no longer surface as false errors, and project discovery no longer mistakes the global `~/.axiom/` directory for a project root.
 
 ### Phase 18 Summary
 
@@ -383,7 +400,7 @@ Phase 18 implemented the security and prompt-safety layer from Architecture Sect
   - `inference/broker_test.go` (3) - local routing for secret-bearing payloads, explicit override behavior, security-critical-safe cloud routing
   - `ipc/spec_test.go` (2) - prompt-safe TaskSpec and ReviewSpec wrapping
 
-Known boundary: full prompt log persistence still belongs to Phase 19, but Phase 18 now guarantees the reusable prompt payload is already redacted before any future logging surface consumes it.
+Phase 19 now consumes that redacted payload path for prompt-log persistence, keeping the phase-18 safety guarantees intact.
 
 ### Phase 16 Summary
 
@@ -445,7 +462,7 @@ See [API Server Reference](api-server.md) for the full endpoint documentation.
 
 Phase 14 implemented the plain CLI command surface per Architecture Section 27, making the engine fully operable without the full-screen TUI:
 
-- **CLI package** (`cli/`) — New `internal/cli/` package with `Commands()` entry point returning all CLI commands for registration. Commands are split into separate files by domain: `run.go` (project lifecycle), `export.go` (JSON export), `models.go` (model registry), `bitnet.go` (BitNet server), `index.go` (semantic indexer), `skill.go` (runtime skill generation), `session.go` (interactive session commands), and `stubs.go` (remaining later-phase placeholders such as `doctor`). Shared helpers in `helpers.go` provide `findProjectID` (lookup project by root path), `findActiveRun` (lookup active run for a project), and `openApp` (create App from cwd).
+- **CLI package** (`cli/`) - New `internal/cli/` package with `Commands()` entry point returning all CLI commands for registration. Commands are split into separate files by domain: `run.go` (project lifecycle), `export.go` (JSON export), `models.go` (model registry), `bitnet.go` (BitNet server), `index.go` (semantic indexer), `skill.go` (runtime skill generation), `session.go` (interactive session commands), `doctor.go` (system diagnostics), and `stubs.go` (remaining compatibility placeholders). Shared helpers in `helpers.go` provide `findProjectID` (lookup project by root path), `findActiveRun` (lookup active run for a project), and `openApp` (create App from cwd).
 
 - **Project lifecycle commands** (`cli/run.go`) — Four commands wired to engine methods:
   - `axiom run "<prompt>" [--budget <usd>]` — creates a project run in `draft_srs` status using `engine.CreateRun`, defaults budget to config value, prints run ID/status/branch/budget
@@ -460,10 +477,10 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
   - `axiom models list [--tier <tier>] [--family <family>]` — tabular output via `tabwriter` with ID, family, tier, context window, and source columns
   - `axiom models info <model-id>` — detailed output including pricing, capability flags, strengths, weaknesses, and recommendations
 
-- **BitNet commands** (`cli/bitnet.go`) — Four subcommands backed by `bitnet.Service`:
-  - `axiom bitnet start` / `axiom bitnet stop` — delegate to `Service.Start`/`Stop` (manual-mode stubs in current release)
-  - `axiom bitnet status` — shows enabled/disabled state, endpoint, running status, and loaded model count
-  - `axiom bitnet models` — lists models loaded in the server with ID and owner
+- **BitNet commands** (`cli/bitnet.go`) - Four subcommands backed by `bitnet.Service`:
+  - `axiom bitnet start` / `axiom bitnet stop` - delegate to `Service.Start`/`Stop`, including managed-process start/stop when `[bitnet].command` is configured
+  - `axiom bitnet status` - shows enabled/disabled state, endpoint, running status, and loaded model count
+  - `axiom bitnet models` - lists models loaded in the server with ID and owner
 
 - **Index commands** (`cli/index.go`) — Two subcommands backed by `index.Indexer`:
   - `axiom index refresh` — performs full project re-index via `Indexer.Index`
@@ -475,9 +492,8 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
   - Runtime-native companion files are generated where they improve adherence: Claude Code gets `.claude/CLAUDE.md` plus hooks, Codex/OpenCode get `AGENTS.md`, and OpenCode gets `opencode.json`.
   - The dedicated package is `internal/skill/`, and the operator-facing reference is [Runtime Skill System Reference](runtime-skills.md).
 
-- **Stub commands** (`cli/stubs.go`) — Section 27 commands that still depend on later phases return informational messages:
-  - ~~`axiom api start/stop`, `axiom api token generate [--scope]/list/revoke`, `axiom tunnel start/stop`~~ — fully implemented in Phase 16
-  - `axiom doctor` — Phase 19
+- **Stub commands** (`cli/stubs.go`) - Section 27 commands that still depend on later phases return informational messages:
+  - ~~`axiom api start/stop`, `axiom api token generate [--scope]/list/revoke`, `axiom tunnel start/stop`~~ - fully implemented in Phase 16
   - Note: `axiom tui`, `axiom session` were stubs in Phase 14 but are now fully implemented (Phase 15).
 
 - **Design decisions** — All commands use engine projections and service methods rather than direct SQLite access, per Architecture constraint 7. Commands are testable via separated action functions that accept an `*app.App` and `io.Writer`, allowing tests to call the logic directly without cobra or filesystem dependencies.
@@ -493,7 +509,7 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
   - `index_test.go` (11) — refresh, all 5 query types, invalid type, 4 required parameter validations
   - `session_test.go` (7) — session list/export/resume and TUI plain-mode command behavior
   - `skill_test.go` (2) — runtime skill CLI generation and invalid runtime handling
-  - `stubs_test.go` (12) — API/tunnel/doctor compatibility messages and command existence
+  - `stubs_test.go` (12) — API/tunnel compatibility messages plus doctor command smoke coverage
   - `generator_test.go` (4) — artifact generation, config-sensitive regeneration, runtime-native guardrails, invalid runtime rejection
 
 - **Resolved deferred items from prior phases:**
@@ -753,16 +769,15 @@ Phase 7 implemented the model registry and BitNet server lifecycle per Architect
 
 - **Engine adapter** (`models/engine_adapter.go`) — `RegistryAdapter` bridges `Registry` to `engine.ModelService` interface with compile-time assertion. Converts `state.ModelRegistryEntry` to `engine.ModelInfo` including performance history fields.
 
-- **BitNet service** (`bitnet/service.go`) — Server lifecycle management: `Status` (health check via `/health` + model count), `ListModels` (query `/v1/models`), `Start`/`Stop` (manual-mode stubs for initial release), `Enabled` (config-driven), `BaseURL` (constructed from config), `WeightDir` (resolves `~/.axiom/bitnet/models/`). Sentinel errors: `ErrDisabled`, `ErrNotRunning`, `ErrNoWeights`.
+- **BitNet service** (`bitnet/service.go`) - Server lifecycle management: `Status` (health check via `/health` + model count + managed-process metadata), `ListModels` (query `/v1/models`), `Start`/`Stop` (managed-process lifecycle when configured, manual fallback otherwise), `Enabled` (config-driven), `BaseURL` (constructed from config), `WeightDir` (resolves `~/.axiom/bitnet/models/`). Sentinel errors: `ErrDisabled`, `ErrNotRunning`, `ErrNoWeights`.
 
 - **Engine integration** — `ModelService` interface added to `engine/interfaces.go` with `RefreshShipped`, `RefreshOpenRouter`, `RefreshBitNet`, `List`, and `Get` methods. `ModelInfo` struct includes all registry fields plus performance history. `Models` field added to `Engine.Options` and wired in `Engine` constructor.
 
 - **App wiring** (`app/app.go`) — `Open()` now creates a `models.Registry`, loads shipped models at startup, creates a `bitnet.Service`, and passes a `RegistryAdapter` as the engine's `ModelService`. Both `Registry` and `BitNet` service are exposed on the `App` struct for CLI access.
 
 - **Known deferred items:**
-  - Full BitNet process management (spawning `bitnet.cpp`) — currently requires manual server start
   - First-run weight download with confirmation prompt (Architecture Section 19.9)
-  - ~~CLI command wiring for `axiom models` and `axiom bitnet` commands~~ — resolved in Phase 14
+  - ~~CLI command wiring for `axiom models` and `axiom bitnet` commands~~ - resolved in Phase 14
   - Dynamic model pricing refresh from OpenRouter on broker construction (currently static at startup)
 
 See [Model Registry Reference](model-registry.md) for the full API.
@@ -875,3 +890,5 @@ Phase 2 added the full domain service layer to the `state` package:
 - **69 tests** covering all CRUD operations, valid/invalid transitions, lock conflicts, timestamp handling, and referential integrity
 
 See [Database Schema Reference](database-schema.md) for the complete repository API.
+
+

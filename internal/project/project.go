@@ -110,7 +110,9 @@ func Discover(dir string) (string, error) {
 	for {
 		candidate := filepath.Join(dir, AxiomDir)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return dir, nil
+			if isProjectStateDir(candidate) {
+				return dir, nil
+			}
 		}
 
 		parent := filepath.Dir(dir)
@@ -119,6 +121,28 @@ func Discover(dir string) (string, error) {
 		}
 		dir = parent
 	}
+}
+
+func isProjectStateDir(axiomDir string) bool {
+	projectMarkers := []string{
+		".gitignore",
+		"models.json",
+		filepath.Join("containers", "specs"),
+		"validation",
+		"eco",
+		"logs",
+		DBFile,
+		SRSFile,
+		SRSHashFile,
+	}
+
+	for _, marker := range projectMarkers {
+		if _, err := os.Stat(filepath.Join(axiomDir, marker)); err == nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 // DBPath returns the path to the SQLite database for a project.

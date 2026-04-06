@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -56,11 +58,15 @@ type OrchestratorConfig struct {
 }
 
 type BitNetConfig struct {
-	Enabled              bool   `toml:"enabled"`
-	Host                 string `toml:"host"`
-	Port                 int    `toml:"port"`
-	MaxConcurrentReqs    int    `toml:"max_concurrent_requests"`
-	CPUThreads           int    `toml:"cpu_threads"`
+	Enabled               bool     `toml:"enabled"`
+	Host                  string   `toml:"host"`
+	Port                  int      `toml:"port"`
+	MaxConcurrentReqs     int      `toml:"max_concurrent_requests"`
+	CPUThreads            int      `toml:"cpu_threads"`
+	Command               string   `toml:"command"`
+	Args                  []string `toml:"args"`
+	WorkingDir            string   `toml:"working_dir"`
+	StartupTimeoutSeconds int      `toml:"startup_timeout_seconds"`
 }
 
 type DockerConfig struct {
@@ -72,17 +78,17 @@ type DockerConfig struct {
 }
 
 type ValidationConfig struct {
-	TimeoutMinutes         int     `toml:"timeout_minutes"`
-	CPULimit               float64 `toml:"cpu_limit"`
-	MemLimit               string  `toml:"mem_limit"`
-	Network                string  `toml:"network"`
-	AllowDependencyInstall bool    `toml:"allow_dependency_install"`
-	SecurityScan           bool    `toml:"security_scan"`
-	DependencyCacheMode    string  `toml:"dependency_cache_mode"`
-	FailOnCacheMiss        bool    `toml:"fail_on_cache_miss"`
-	WarmPoolEnabled        bool    `toml:"warm_pool_enabled"`
-	WarmPoolSize           int     `toml:"warm_pool_size"`
-	WarmColdInterval       int     `toml:"warm_cold_interval"`
+	TimeoutMinutes         int               `toml:"timeout_minutes"`
+	CPULimit               float64           `toml:"cpu_limit"`
+	MemLimit               string            `toml:"mem_limit"`
+	Network                string            `toml:"network"`
+	AllowDependencyInstall bool              `toml:"allow_dependency_install"`
+	SecurityScan           bool              `toml:"security_scan"`
+	DependencyCacheMode    string            `toml:"dependency_cache_mode"`
+	FailOnCacheMiss        bool              `toml:"fail_on_cache_miss"`
+	WarmPoolEnabled        bool              `toml:"warm_pool_enabled"`
+	WarmPoolSize           int               `toml:"warm_pool_size"`
+	WarmColdInterval       int               `toml:"warm_cold_interval"`
 	Integration            IntegrationConfig `toml:"integration"`
 }
 
@@ -94,10 +100,10 @@ type IntegrationConfig struct {
 }
 
 type SecurityConfig struct {
-	ForceLocalForSecretBearing       bool     `toml:"force_local_for_secret_bearing"`
-	AllowExternalForRedactedSensitive bool    `toml:"allow_external_for_redacted_sensitive"`
-	SensitivePatterns                []string `toml:"sensitive_patterns"`
-	SecurityCriticalPatterns         []string `toml:"security_critical_patterns"`
+	ForceLocalForSecretBearing        bool     `toml:"force_local_for_secret_bearing"`
+	AllowExternalForRedactedSensitive bool     `toml:"allow_external_for_redacted_sensitive"`
+	SensitivePatterns                 []string `toml:"sensitive_patterns"`
+	SecurityCriticalPatterns          []string `toml:"security_critical_patterns"`
 }
 
 type GitConfig struct {
@@ -107,7 +113,7 @@ type GitConfig struct {
 
 type APIConfig struct {
 	Port         int      `toml:"port"`
-	RateLimitRPM int     `toml:"rate_limit_rpm"`
+	RateLimitRPM int      `toml:"rate_limit_rpm"`
 	AllowedIPs   []string `toml:"allowed_ips"`
 }
 
@@ -123,7 +129,7 @@ type CLIConfig struct {
 }
 
 type ObservabilityConfig struct {
-	LogPrompts    bool `toml:"log_prompts"`
+	LogPrompts     bool `toml:"log_prompts"`
 	LogTokenCounts bool `toml:"log_token_counts"`
 }
 
@@ -152,11 +158,15 @@ func Default(name, slug string) Config {
 			TimeoutSeconds:  120,
 		},
 		BitNet: BitNetConfig{
-			Enabled:           true,
-			Host:              "localhost",
-			Port:              3002,
-			MaxConcurrentReqs: 4,
-			CPUThreads:        4,
+			Enabled:               true,
+			Host:                  "localhost",
+			Port:                  3002,
+			MaxConcurrentReqs:     4,
+			CPUThreads:            4,
+			Command:               "",
+			Args:                  nil,
+			WorkingDir:            "",
+			StartupTimeoutSeconds: 30,
 		},
 		Docker: DockerConfig{
 			Image:          "axiom-meeseeks-multi:latest",
@@ -267,21 +277,33 @@ func (c *Config) Validate() error {
 	if c.API.Port < 1 || c.API.Port > 65535 {
 		errs = append(errs, fmt.Errorf("api.port must be 1-65535; got %d", c.API.Port))
 	}
+	if c.BitNet.StartupTimeoutSeconds < 0 {
+		errs = append(errs, fmt.Errorf("bitnet.startup_timeout_seconds must be >= 0; got %d", c.BitNet.StartupTimeoutSeconds))
+	}
 
 	return errors.Join(errs...)
 }
 
 // LoadFile reads and parses a TOML config file.
 func LoadFile(path string) (*Config, error) {
+	cfg, _, err := loadFileWithRaw(path)
+	return cfg, err
+}
+
+func loadFileWithRaw(path string) (*Config, map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config %s: %w", path, err)
+		return nil, nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 	var cfg Config
 	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+		return nil, nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
-	return &cfg, nil
+	var raw map[string]any
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return nil, nil, fmt.Errorf("parsing raw config %s: %w", path, err)
+	}
+	return &cfg, raw, nil
 }
 
 // Load implements layered config: global (~/.axiom/config.toml) merged with
@@ -294,17 +316,19 @@ func Load(projectRoot string) (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err == nil {
 		globalPath := filepath.Join(home, ".axiom", "config.toml")
-		if globalCfg, err := LoadFile(globalPath); err == nil {
-			cfg = mergeConfig(cfg, *globalCfg)
+		if globalCfg, raw, err := loadFileWithRaw(globalPath); err == nil {
+			cfg = mergeConfig(cfg, *globalCfg, raw)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
 	}
 
 	// Layer 2: project config
 	if projectRoot != "" {
 		projectPath := filepath.Join(projectRoot, ".axiom", "config.toml")
-		if projectCfg, err := LoadFile(projectPath); err == nil {
-			cfg = mergeConfig(cfg, *projectCfg)
-		} else if !os.IsNotExist(err) {
+		if projectCfg, raw, err := loadFileWithRaw(projectPath); err == nil {
+			cfg = mergeConfig(cfg, *projectCfg, raw)
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 	}
@@ -312,50 +336,57 @@ func Load(projectRoot string) (*Config, error) {
 	return &cfg, nil
 }
 
-// mergeConfig overlays non-zero values from overlay onto base.
-// For simplicity in the initial implementation, overlay fully replaces base
-// when the overlay file is present. A more granular merge can be added later.
-func mergeConfig(base, overlay Config) Config {
-	if overlay.Project.Name != "" {
-		base.Project.Name = overlay.Project.Name
-	}
-	if overlay.Project.Slug != "" {
-		base.Project.Slug = overlay.Project.Slug
-	}
-	if overlay.Budget.MaxUSD != 0 {
-		base.Budget = overlay.Budget
-	}
-	if overlay.Concurrency.MaxMeeseeks != 0 {
-		base.Concurrency = overlay.Concurrency
-	}
-	if overlay.Orchestrator.Runtime != "" {
-		base.Orchestrator = overlay.Orchestrator
-	}
-	if overlay.Inference.OpenRouterBase != "" || overlay.Inference.OpenRouterAPIKey != "" {
-		base.Inference = overlay.Inference
-	}
-	if overlay.Docker.Image != "" {
-		base.Docker = overlay.Docker
-	}
-	if overlay.Validation.TimeoutMinutes != 0 {
-		base.Validation = overlay.Validation
-	}
-	if overlay.Security.SensitivePatterns != nil {
-		base.Security = overlay.Security
-	}
-	if overlay.Git.BranchPrefix != "" {
-		base.Git = overlay.Git
-	}
-	if overlay.API.Port != 0 {
-		base.API = overlay.API
-	}
-	if overlay.CLI.UIMode != "" {
-		base.CLI = overlay.CLI
-	}
-	if overlay.BitNet.Port != 0 {
-		base.BitNet = overlay.BitNet
-	}
+// mergeConfig overlays only the fields that were explicitly present in the
+// overlay TOML document, preserving defaults for omitted fields.
+func mergeConfig(base, overlay Config, raw map[string]any) Config {
+	dst := reflect.ValueOf(&base).Elem()
+	src := reflect.ValueOf(overlay)
+	mergeStruct(dst, src, raw)
 	return base
+}
+
+func mergeStruct(dst, src reflect.Value, raw map[string]any) {
+	if raw == nil {
+		return
+	}
+
+	for i := 0; i < dst.NumField(); i++ {
+		field := dst.Type().Field(i)
+		key := tomlKey(field)
+		rawVal, ok := raw[key]
+		if !ok {
+			continue
+		}
+
+		dstField := dst.Field(i)
+		srcField := src.Field(i)
+		if !dstField.CanSet() {
+			continue
+		}
+
+		if dstField.Kind() == reflect.Struct {
+			if nested, ok := rawVal.(map[string]any); ok {
+				mergeStruct(dstField, srcField, nested)
+				continue
+			}
+		}
+
+		dstField.Set(srcField)
+	}
+}
+
+func tomlKey(field reflect.StructField) string {
+	tag := field.Tag.Get("toml")
+	if tag == "" {
+		return strings.ToLower(field.Name)
+	}
+	if idx := strings.Index(tag, ","); idx >= 0 {
+		tag = tag[:idx]
+	}
+	if tag == "" {
+		return strings.ToLower(field.Name)
+	}
+	return tag
 }
 
 // Marshal serializes a Config to TOML bytes.

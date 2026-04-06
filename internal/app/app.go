@@ -1,13 +1,17 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/openaxiom/axiom/internal/bitnet"
 	"github.com/openaxiom/axiom/internal/config"
+	"github.com/openaxiom/axiom/internal/container"
 	"github.com/openaxiom/axiom/internal/engine"
+	"github.com/openaxiom/axiom/internal/gitops"
+	"github.com/openaxiom/axiom/internal/index"
 	"github.com/openaxiom/axiom/internal/models"
 	"github.com/openaxiom/axiom/internal/project"
 	"github.com/openaxiom/axiom/internal/state"
@@ -66,17 +70,34 @@ func Open(log *slog.Logger) (*App, error) {
 
 	// Phase 7: Create BitNet service manager.
 	bitnetSvc := bitnet.NewService(cfg)
+	gitSvc := gitops.New(log)
+	indexer := index.NewIndexerAdapter(index.NewIndexer(db, log))
+	containerSvc := container.New(container.Options{
+		ProjectRoot: root,
+		Config:      &cfg.Docker,
+		DB:          db,
+		Log:         log,
+		Exec:        container.CLIExecutor{},
+	})
 
 	eng, err := engine.New(engine.Options{
-		Config:  cfg,
-		DB:      db,
-		RootDir: root,
-		Log:     log,
-		Models:  models.NewRegistryAdapter(registry),
+		Config:    cfg,
+		DB:        db,
+		RootDir:   root,
+		Log:       log,
+		Git:       gitSvc,
+		Container: containerSvc,
+		Index:     indexer,
+		Models:    models.NewRegistryAdapter(registry),
 	})
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("creating engine: %w", err)
+	}
+
+	if _, err := eng.Recover(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("running startup recovery: %w", err)
 	}
 
 	return &App{

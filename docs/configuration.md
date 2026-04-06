@@ -38,6 +38,10 @@ host = "localhost"                     # BitNet server host
 port = 3002                            # BitNet server port
 max_concurrent_requests = 4            # Max parallel local inference requests
 cpu_threads = 4                        # CPU threads for local inference
+command = ""                           # Optional executable for Axiom-managed BitNet
+args = []                              # Optional argv for the managed process
+working_dir = ""                       # Optional working directory for the managed process
+startup_timeout_seconds = 30           # Wait time for /health before startup fails
 
 [docker]
 image = "axiom-meeseeks-multi:latest"  # Default Meeseeks container image
@@ -105,7 +109,7 @@ editor_mode = "default"                # default | vim
 images_enabled = false                 # Image support in TUI
 
 [observability]
-log_prompts = false                    # Reserved for Phase 19 prompt-log persistence
+log_prompts = false                    # Persist sanitized prompt/response logs under .axiom/logs/prompts/
 log_token_counts = true                # Always log token counts
 ```
 
@@ -128,10 +132,16 @@ The following validation rules are enforced when loading configuration:
 | `validation.network` | Must be "none" |
 | `cli.ui_mode` | Must be: auto, tui, or plain |
 | `api.port` | Must be 1-65535 |
+| `bitnet.startup_timeout_seconds` | Must be >= 0 |
 
 **Note:** The `[inference]` section is not currently validated at startup — only the `openrouter_api_key` must be non-empty for cloud inference to work. Set it in the global config (`~/.axiom/config.toml`) to keep secrets out of the project config.
 
 Invalid configurations produce actionable error messages listing all violations.
+
+## Operations Notes
+
+- Managed BitNet process control is disabled unless `bitnet.command` is configured. When it is set, Axiom stores managed-process state under `~/.axiom/bitnet/service.json`.
+- `axiom doctor` can load only the global/default config when run outside a project. In that case, project-specific cache checks are skipped.
 
 ## Security Behavior
 
@@ -142,7 +152,9 @@ Phase 18 uses the `[security]` section during prompt packaging and inference rou
 - Explicit external use of redacted sensitive content is only allowed per request and only when `allow_external_for_redacted_sensitive = true`.
 - `.axiom/`, `.env*`, and log files are excluded from prompt packaging regardless of config.
 
-The `observability.log_prompts` flag exists in config today, but the persistence feature itself is still deferred to Phase 19. Phase 18 ensures any future prompt logging can reuse already-redacted payloads.
+When `observability.log_prompts = true`, Axiom writes sanitized JSON prompt logs to `.axiom/logs/prompts/<task-id>-<attempt>.json`. The logger re-applies the secret-redaction policy before persistence, so raw secrets are not written even if the provider response contains them.
+
+See [Operations & Diagnostics Reference](operations-diagnostics.md) for startup recovery, `axiom doctor`, managed BitNet lifecycle, and prompt-log behavior.
 
 ## Config Layering Example
 

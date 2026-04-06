@@ -69,11 +69,13 @@ When `Broker.Infer()` is called, it executes these steps in order:
 
 11. **Record cost** - Updates the budget enforcer's running total.
 
-12. **Log to database** - Inserts a `cost_log` entry with run ID, task ID, attempt ID, agent type, model ID, token counts, and cost.
+12. **Log to database** - Inserts a `cost_log` entry and updates `task_attempts.input_tokens`, `output_tokens`, and `cost_usd` for the active attempt.
 
-13. **Emit `inference_completed` event** - Includes model, provider, tokens, cost, finish reason, and latency.
+13. **Persist prompt log (optional)** - When `observability.log_prompts = true`, writes a sanitized prompt/response log under `.axiom/logs/prompts/` and emits `prompt_logged`. If the write fails, emits `diagnostic_warning` but does not fail inference.
 
-14. **Budget threshold check** - Emits `budget_exceeded` if spend > max, or `budget_warning` if spend >= warn threshold.
+14. **Emit `inference_completed` event** - Includes model, provider, tokens, cost, finish reason, and latency.
+
+15. **Budget threshold check** - Emits `budget_exceeded` if spend > max, or `budget_warning` if spend >= warn threshold.
 
 ## Creating a Broker
 
@@ -106,8 +108,15 @@ broker := inference.NewBroker(inference.BrokerConfig{
         "anthropic/claude-4-sonnet": "standard",
         "bitnet/falcon3-1b":        "local",
     },
+    PromptLogger: observability.NewPromptLogger(
+        root,
+        cfg.Observability.LogPrompts,
+        security.NewPolicy(cfg.Security),
+    ),
 })
 ```
+
+`PromptLogger` is optional. Pass `nil` to disable file-based prompt logging.
 
 ## Integration with Engine
 
@@ -267,10 +276,12 @@ The broker validates this on every request. A local-tier task requesting a stand
 | `security_redaction` | For each redacted secret match | `file`, `line`, `pattern` |
 | `security_local_routed` | When a secret-bearing request is forced local | `requested_model_id`, `local_model_id`, `security_critical` |
 | `security_override_approved` | When redacted sensitive content is allowed externally | `requested_model_id`, `security_critical` |
+| `prompt_logged` | After a prompt log is written | `path` |
+| `diagnostic_warning` | On non-fatal observability issues | `code`, `message` |
 | `budget_warning` | When spend reaches warn threshold | `spent`, `max` |
 | `budget_exceeded` | When spend exceeds budget ceiling | `spent`, `max` |
 
-## Cost Logging
+## Cost & Prompt Logging
 
 Every completed inference request is logged to the `cost_log` table:
 
@@ -279,6 +290,14 @@ INSERT INTO cost_log
     (run_id, task_id, attempt_id, agent_type, model_id, input_tokens, output_tokens, cost_usd)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ```
+
+The broker also updates the active `task_attempts` row with:
+
+- `input_tokens`
+- `output_tokens`
+- `cost_usd`
+
+When prompt logging is enabled, the broker writes a sanitized JSON file to `.axiom/logs/prompts/<task-id>-<attempt>.json`. Request and response content are re-redacted before persistence. Prompt-log write failures emit `diagnostic_warning` and do not fail the inference call.
 
 The `TotalCostByRun()` method sums all cost entries for a run and is used by:
 - The budget enforcer (loaded at broker creation)
@@ -307,9 +326,9 @@ All errors are checked via `errors.Is()`.
 | Rate limiter | 6 | Under/over limit, independent tasks, count, reset, concurrency |
 | OpenRouter provider | 11 | Success, API errors (402/429/500), invalid JSON, empty choices, context cancellation, availability |
 | BitNet provider | 7 | Success, grammar constraints, no-grammar case, availability, errors, empty choices |
-| Broker integration | 19 | Cloud/local routing, allowlist, tier mismatch, budget rejection, rate limit, token cap, cost logging, event emission, fallback, both-down, zero-cost, budget tracking, prompt fallback, provider errors, secret redaction, override routing, security-critical separation |
+| Broker integration | 24 | Cloud/local routing, allowlist, tier mismatch, budget rejection, rate limit, token cap, cost logging, attempt metrics, prompt logging, event emission, fallback, both-down, zero-cost, budget tracking, prompt fallback, provider errors, secret redaction, override routing, security-critical separation |
 
-Total: **54 tests**. All use mock HTTP servers (`httptest.NewServer`) or mock provider implementations. Broker tests create real SQLite databases for cost log verification.
+Total: **59 tests**. All use mock HTTP servers (`httptest.NewServer`) or mock provider implementations. Broker tests create real SQLite databases for cost log and prompt-log verification.
 
 ## Known Deferred Items
 

@@ -197,11 +197,11 @@ Show detailed model information including pricing, capabilities, strengths, and 
 
 ### `axiom bitnet start`
 
-Start the local BitNet inference server.
+Start the local BitNet inference server. When `[bitnet].command` is configured, Axiom launches and monitors the process; otherwise the command reports that manual setup is required.
 
 ### `axiom bitnet stop`
 
-Stop the local BitNet inference server.
+Stop the local BitNet inference server if it was started by Axiom. Manually managed BitNet processes must still be stopped manually.
 
 ### `axiom bitnet status`
 
@@ -404,11 +404,40 @@ Generated content includes the Axiom workflow, trust boundaries, request types, 
 
 See [Runtime Skill System Reference](runtime-skills.md) for the full artifact layout, regeneration rules, and runtime-specific enforcement behavior.
 
-## Stub Commands (Planned for Later Phases)
+## Diagnostics Commands
 
-These commands exist in the CLI surface but delegate to subsystems not yet implemented:
+### `axiom doctor`
 
-### Utility Commands (Phase 19)
-| Command | Description |
-|---------|-------------|
-| `axiom doctor` | System health check |
+Run a local diagnostics pass covering:
+
+- Docker daemon availability
+- BitNet status and launch configuration
+- provider/network reachability
+- CPU pressure vs configured concurrency
+- project cache/runtime directories and Docker image presence
+- secret-scanner policy initialization
+
+The command works outside a project. In that case, project-specific cache checks are skipped.
+
+**Status labels:**
+
+- `PASS` - check succeeded
+- `WARN` - configuration works but should be improved
+- `FAIL` - action required
+- `SKIP` - check not applicable in the current context
+
+**Example:**
+
+```text
+Phase 19 Doctor Report
+[PASS] docker: Docker daemon reachable
+[WARN] bitnet: BitNet is configured but not currently running
+[PASS] network: Provider endpoint reachable
+[PASS] resources: Configured resource pressure is within local CPU capacity
+[PASS] cache: Project cache directories and image baseline are ready
+[PASS] security: Secret scanner patterns loaded successfully
+```
+
+The current implementation always prints the full report; for scripting, inspect the per-line status labels.
+
+See [Operations & Diagnostics Reference](operations-diagnostics.md) for recovery, prompt logs, and BitNet managed-mode behavior.

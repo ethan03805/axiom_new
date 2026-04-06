@@ -147,14 +147,16 @@ svc := bitnet.NewService(cfg)
 | `WeightDir() string` | Model weights directory (`~/.axiom/bitnet/models/`) |
 | `Status(ctx) ServiceStatus` | Health check + model count |
 | `ListModels(ctx) ([]LocalModel, error)` | Query loaded models from server |
-| `Start(ctx) error` | Start the BitNet server (manual-mode stub) |
-| `Stop(ctx) error` | Stop the BitNet server (manual-mode stub) |
+| `Start(ctx) error` | Start the configured BitNet process and wait for `/health` |
+| `Stop(ctx) error` | Stop an Axiom-managed BitNet process |
 
 ### ServiceStatus
 
 ```go
 type ServiceStatus struct {
     Running    bool   // Server is healthy and responding
+    Managed    bool   // Process is tracked by Axiom state
+    PID        int    // Managed process ID when known
     Endpoint   string // Base URL of the server
     ModelCount int    // Number of models currently loaded
 }
@@ -169,7 +171,13 @@ host = "localhost"                # Server host
 port = 3002                       # Server port
 max_concurrent_requests = 4       # Max parallel requests
 cpu_threads = 4                   # CPU threads for inference
+command = ""                      # Optional Axiom-managed server executable
+args = []                         # Optional argv
+working_dir = ""                  # Optional process working directory
+startup_timeout_seconds = 30      # Wait time for /health
 ```
+
+When `Start()` succeeds, Axiom records managed-process metadata in `~/.axiom/bitnet/service.json`. `Stop()` only terminates processes tracked in that state file. If the server was started manually, `Stop()` returns an explicit manual-stop error instead of killing arbitrary local processes.
 
 ### Sentinel Errors
 
@@ -218,9 +226,9 @@ type ModelService interface {
 | Combined filtering | 1 | Tier + family filter together |
 | Broker maps | 1 | Pricing + tier extraction |
 | Performance preservation | 1 | Refresh does not overwrite accrued performance data |
-| BitNet service | 11 | Creation, status, models, enabled, URL, start/stop, weight dir |
+| BitNet service | 14 | Creation, status, models, enabled, URL, managed start/stop lifecycle, weight dir, managed-state reporting |
 
-Total: **43 tests** across `internal/state/`, `internal/models/`, and `internal/bitnet/`.
+Total: **45 tests** across `internal/state/`, `internal/models/`, and `internal/bitnet/`.
 
 ## Offline Operation
 

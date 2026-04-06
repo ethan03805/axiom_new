@@ -249,18 +249,17 @@ Phase 18 adds three security-specific event types:
 
 These events are persisted through the standard `events` table and therefore appear anywhere normal engine event history is surfaced.
 
-## Current Boundary
+## Prompt Logging
 
-Prompt-log persistence is still deferred to Phase 19.
+Phase 19 adds prompt-log persistence on top of the phase-18 redaction layer.
 
 What exists now:
 
 - prompt payload construction is redacted before provider execution
 - TaskSpec and ReviewSpec packaging is prompt-safe
 - broker routing is secret-aware
+- a dedicated prompt-log writer persists request/response payloads when `observability.log_prompts = true`
 
-What does not exist yet:
+Prompt logs are written to `.axiom/logs/prompts/<task-id>-<attempt>.json` and include provider/model/tokens/cost/latency metadata. The prompt logger re-applies the security policy before writing, so raw secrets are not stored even if they appear in the original request or model response.
 
-- a dedicated prompt-log writer that persists prompts/responses when `observability.log_prompts = true`
-
-That config flag already exists, but the actual persistence feature is not implemented yet. When Phase 19 adds it, it should reuse the already-redacted prompt payload.
+See [Operations & Diagnostics Reference](operations-diagnostics.md) for the operator-facing recovery and prompt-log runtime behavior.

@@ -225,16 +225,3 @@ func TunnelCmd(verbose *bool) *cobra.Command {
 
 	return cmd
 }
-
-// DoctorCmd creates the `axiom doctor` stub command (Phase 19).
-func DoctorCmd(verbose *bool) *cobra.Command {
-	return &cobra.Command{
-		Use:   "doctor",
-		Short: "Check system requirements",
-		Long:  "Check Docker, BitNet, network, resources, warm-pool images, and secret scanner regexes.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), stubMessage("Doctor", "Phase 19"))
-			return nil
-		},
-	}
-}

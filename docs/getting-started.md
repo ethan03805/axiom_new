@@ -30,6 +30,16 @@ axiom version
 # axiom dev (abc1234) built 2026-04-05T... windows/amd64
 ```
 
+### Run Diagnostics
+
+Before initializing a project, verify the local runtime dependencies:
+
+```bash
+axiom doctor
+```
+
+`axiom doctor` checks Docker, BitNet configuration/availability, provider reachability, local CPU pressure, cache readiness, and secret-scanner initialization. It works both inside and outside a project.
+
 ## Quick Start
 
 ### 1. Initialize a Project
@@ -68,6 +78,10 @@ axiom init
 ## Configuration
 
 The generated `.axiom/config.toml` contains all configuration with architecture defaults. See [Configuration Reference](configuration.md) for details.
+
+User-wide defaults and secrets such as the OpenRouter API key live in `~/.axiom/config.toml`. Optional managed BitNet launch settings also belong there when you want `axiom bitnet start` / `stop` to control a local server process.
+
+See [Operations & Diagnostics Reference](operations-diagnostics.md) for startup recovery, prompt logs, `axiom doctor`, and managed BitNet behavior.
 
 ## Secret Handling and Prompt Safety
 
@@ -123,6 +137,8 @@ your-project/
 └── ...
 ```
 
+The `.axiom/logs/prompts/` directory is populated only when prompt logging is enabled.
+
 ## Git Hygiene
 
 Axiom automatically manages `.gitignore` entries inside `.axiom/`:
@@ -136,6 +152,8 @@ Axiom automatically manages `.gitignore` entries inside `.axiom/`:
 | `.axiom/containers/` | Gitignored | Ephemeral container data |
 | `.axiom/validation/` | Gitignored | Ephemeral sandbox data |
 | `.axiom/logs/` | Gitignored | Runtime logs |
+
+Prompt logs are written only when `observability.log_prompts = true`.
 
 ## Git Branch Strategy
 
@@ -259,9 +277,17 @@ axiom models info <model-id>                   # Show model details
 
 ```bash
 axiom bitnet status                            # Show server status
-axiom bitnet start                             # Start server
-axiom bitnet stop                              # Stop server
+axiom bitnet start                             # Start managed server (if configured)
+axiom bitnet stop                              # Stop managed server
 axiom bitnet models                            # List loaded models
+```
+
+If `[bitnet].command` is not configured, Axiom still supports manually run BitNet servers, but `axiom bitnet start` will tell you that manual setup is required.
+
+### Diagnostics
+
+```bash
+axiom doctor                                   # Check Docker, BitNet, network, cache, and scanner state
 ```
 
 ### Semantic Index
@@ -371,8 +397,7 @@ Available now:
 
 - [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md) - secret scanning, local-only routing defaults, and prompt-safe spec packaging
 
-Still planned for a later phase:
-
-- `axiom doctor` — system health and dependency checks (Phase 19)
+- [Operations & Diagnostics Reference](operations-diagnostics.md) - startup recovery, doctor checks, prompt logs, and managed BitNet operations
 
 See the [Architecture Document](../ARCHITECTURE.md) and [Implementation Plan](../IMPLEMENTATION_PLAN.md) for the full roadmap.
+

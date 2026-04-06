@@ -53,7 +53,7 @@ Validation is structural only — it checks that the expected sections exist, no
 
 ### Immutability
 
-After approval, the SRS file at `.axiom/srs.md` is read-only (file permissions `0o444`). The engine will not overwrite it through normal operation. The SHA-256 hash stored in SQLite can be used for integrity verification on startup (Phase 19).
+After approval, the SRS file at `.axiom/srs.md` is read-only (file permissions `0o444`). The engine will not overwrite it through normal operation. During startup recovery, the engine verifies the SHA-256 hash on disk against both `.axiom/srs.md.sha256` and the latest stored `project_runs.srs_hash`.
 
 ### Bootstrap Mode
 

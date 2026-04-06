@@ -1,6 +1,4 @@
-// Package bitnet implements the BitNet local inference server lifecycle management
-// per Architecture Section 19. It provides start/stop/status/models commands for
-// the local BitNet server running Falcon3 1.58-bit quantized models.
+// Package bitnet implements BitNet local inference server lifecycle management.
 package bitnet
 
 import (
@@ -11,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -27,6 +26,8 @@ var (
 // ServiceStatus holds the current state of the BitNet server.
 type ServiceStatus struct {
 	Running    bool
+	Managed    bool
+	PID        int
 	Endpoint   string
 	ModelCount int
 }
@@ -37,25 +38,58 @@ type LocalModel struct {
 	OwnedBy string
 }
 
+type serviceState struct {
+	PID        int       `json:"pid"`
+	Command    string    `json:"command"`
+	Args       []string  `json:"args,omitempty"`
+	WorkingDir string    `json:"working_dir,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+}
+
+// Option customizes a BitNet service instance.
+type Option func(*Service)
+
+// WithHomeDir overrides the home-directory lookup used for state files and model paths.
+func WithHomeDir(fn func() (string, error)) Option {
+	return func(s *Service) {
+		s.homeDir = fn
+	}
+}
+
+// WithCommandFactory overrides process creation, primarily for tests.
+func WithCommandFactory(fn func(context.Context, string, ...string) *exec.Cmd) Option {
+	return func(s *Service) {
+		s.commandFactory = fn
+	}
+}
+
 // Service manages the BitNet local inference server lifecycle.
-// Per Architecture Section 19.8, BitNet is enabled by default and
-// controllable via config.
 type Service struct {
-	cfg     *config.Config
-	baseURL string
-	client  *http.Client
+	cfg            *config.Config
+	baseURL        string
+	client         *http.Client
+	homeDir        func() (string, error)
+	commandFactory func(context.Context, string, ...string) *exec.Cmd
 }
 
 // NewService creates a new BitNet service manager.
-func NewService(cfg *config.Config) *Service {
+func NewService(cfg *config.Config, opts ...Option) *Service {
 	baseURL := fmt.Sprintf("http://%s:%d", cfg.BitNet.Host, cfg.BitNet.Port)
-	return &Service{
+	svc := &Service{
 		cfg:     cfg,
 		baseURL: baseURL,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		homeDir: os.UserHomeDir,
+		commandFactory: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, name, args...)
+		},
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // Enabled returns whether BitNet is enabled in the configuration.
@@ -69,13 +103,28 @@ func (s *Service) BaseURL() string {
 }
 
 // WeightDir returns the directory where BitNet model weights are stored.
-// Per Architecture Section 19.9, weights are stored under ~/.axiom/bitnet/models/.
 func (s *Service) WeightDir() string {
-	home, err := os.UserHomeDir()
+	home, err := s.homeDir()
 	if err != nil {
 		return filepath.Join(".", ".axiom", "bitnet", "models")
 	}
 	return filepath.Join(home, ".axiom", "bitnet", "models")
+}
+
+func (s *Service) stateDir() string {
+	home, err := s.homeDir()
+	if err != nil {
+		return filepath.Join(".", ".axiom", "bitnet")
+	}
+	return filepath.Join(home, ".axiom", "bitnet")
+}
+
+func (s *Service) statePath() string {
+	return filepath.Join(s.stateDir(), "service.json")
+}
+
+func (s *Service) processLogPath() string {
+	return filepath.Join(s.stateDir(), "service.log")
 }
 
 // Status checks the health of the BitNet server and returns its status.
@@ -84,7 +133,11 @@ func (s *Service) Status(ctx context.Context) ServiceStatus {
 		Endpoint: s.baseURL,
 	}
 
-	// Health check
+	if state, err := s.readState(); err == nil {
+		status.Managed = true
+		status.PID = state.PID
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/health", nil)
 	if err != nil {
 		return status
@@ -101,7 +154,6 @@ func (s *Service) Status(ctx context.Context) ServiceStatus {
 
 	status.Running = true
 
-	// Count loaded models
 	models, err := s.ListModels(ctx)
 	if err == nil {
 		status.ModelCount = len(models)
@@ -149,36 +201,128 @@ func (s *Service) ListModels(ctx context.Context) ([]LocalModel, error) {
 	return models, nil
 }
 
-// Start attempts to start the BitNet server process.
-// Per Architecture Section 19.9, if no model weights are present,
-// the user should be prompted to download them first.
+// Start launches the configured BitNet server process and waits for it to become healthy.
 func (s *Service) Start(ctx context.Context) error {
 	if !s.cfg.BitNet.Enabled {
 		return ErrDisabled
 	}
 
-	// Check if already running
 	status := s.Status(ctx)
 	if status.Running {
-		return nil // already running
+		return nil
 	}
 
-	// In the initial implementation, we rely on the user starting the BitNet
-	// server externally. Full process management (spawning bitnet.cpp) will
-	// be implemented when the BitNet binary integration is built.
-	//
-	// For now, return an error indicating the server needs to be started manually.
-	return fmt.Errorf("bitnet: server not running at %s — start it manually with: python run_inference_server.py", s.baseURL)
+	if s.cfg.BitNet.Command == "" {
+		return fmt.Errorf("bitnet: manual setup required; configure [bitnet].command (and optionally args/working_dir) or start the server manually")
+	}
+	if s.cfg.BitNet.WorkingDir != "" {
+		if info, err := os.Stat(s.cfg.BitNet.WorkingDir); err != nil || !info.IsDir() {
+			return fmt.Errorf("bitnet: manual setup required; working_dir %q is not available", s.cfg.BitNet.WorkingDir)
+		}
+	}
+
+	if err := os.MkdirAll(s.stateDir(), 0o755); err != nil {
+		return fmt.Errorf("bitnet: create state dir: %w", err)
+	}
+
+	cmd := s.commandFactory(ctx, s.cfg.BitNet.Command, s.cfg.BitNet.Args...)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if s.cfg.BitNet.WorkingDir != "" {
+		cmd.Dir = s.cfg.BitNet.WorkingDir
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("bitnet: start process: %w", err)
+	}
+
+	if err := s.writeState(serviceState{
+		PID:        cmd.Process.Pid,
+		Command:    s.cfg.BitNet.Command,
+		Args:       append([]string(nil), s.cfg.BitNet.Args...),
+		WorkingDir: s.cfg.BitNet.WorkingDir,
+		StartedAt:  time.Now().UTC(),
+	}); err != nil {
+		_ = cmd.Process.Kill()
+		return err
+	}
+
+	timeout := time.Duration(s.cfg.BitNet.StartupTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s.Status(context.Background()).Running {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	_ = cmd.Process.Kill()
+	_ = s.clearState()
+	return fmt.Errorf("bitnet: timed out waiting for the local server to become healthy at %s", s.baseURL)
 }
 
-// Stop attempts to stop the BitNet server process.
+// Stop terminates an Axiom-managed BitNet server.
 func (s *Service) Stop(ctx context.Context) error {
 	status := s.Status(ctx)
-	if !status.Running {
+	state, err := s.readState()
+	if err != nil {
+		if status.Running {
+			return fmt.Errorf("bitnet: server is running but not managed by axiom; stop it manually")
+		}
 		return ErrNotRunning
 	}
 
-	// In the initial implementation, we rely on the user stopping the server
-	// externally. Full process management will be added later.
-	return fmt.Errorf("bitnet: stop the server manually (Ctrl-C the running process)")
+	proc, err := os.FindProcess(state.PID)
+	if err != nil {
+		return fmt.Errorf("bitnet: find process: %w", err)
+	}
+	if err := proc.Kill(); err != nil {
+		return fmt.Errorf("bitnet: stop process: %w", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !s.Status(ctx).Running {
+			_ = s.clearState()
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	_ = s.clearState()
+	return fmt.Errorf("bitnet: process %d was signaled but the server is still responding at %s", state.PID, s.baseURL)
+}
+
+func (s *Service) writeState(state serviceState) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("bitnet: marshal state: %w", err)
+	}
+	if err := os.WriteFile(s.statePath(), data, 0o644); err != nil {
+		return fmt.Errorf("bitnet: write state: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) readState() (*serviceState, error) {
+	data, err := os.ReadFile(s.statePath())
+	if err != nil {
+		return nil, err
+	}
+	var state serviceState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("bitnet: decode state: %w", err)
+	}
+	return &state, nil
+}
+
+func (s *Service) clearState() error {
+	if err := os.Remove(s.statePath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("bitnet: remove state: %w", err)
+	}
+	return nil
 }
