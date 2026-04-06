@@ -10,10 +10,12 @@ axiom/
 ├── internal/               # Private application packages
 │   ├── app/                # Composition root (wires config, state, engine)
 │   ├── config/             # TOML config loading, validation, layering
-│   ├── engine/             # Trusted engine runtime (Phase 3)
+│   ├── engine/             # Trusted engine runtime (Phase 3+)
 │   │   ├── interfaces.go   # Service interfaces (GitService, ContainerService, InferenceService, IndexService, ModelService)
 │   │   ├── engine.go       # Engine struct, constructor, Start/Stop lifecycle, emitEvent helper
 │   │   ├── run.go          # Run lifecycle (CreateRun, PauseRun, ResumeRun, CancelRun, CompleteRun, FailRun)
+│   │   ├── srs.go          # SRS lifecycle (SubmitSRS, ApproveSRS, RejectSRS) (Phase 9)
+│   │   ├── eco.go          # ECO lifecycle (ProposeECO, ApproveECO, RejectECO) (Phase 9)
 │   │   ├── status.go       # Status projections (RunStatusProjection, TaskSummary, BudgetSummary)
 │   │   └── worker.go       # Background worker pool (register, start, stop periodic workers)
 │   ├── events/             # Central event bus (Phase 3)
@@ -77,13 +79,18 @@ axiom/
 │   │   ├── query.go        # Typed query API: lookup_symbol, reverse_dependencies, list_exports, find_implementations, module_graph
 │   │   └── engine_adapter.go # IndexerAdapter → engine.IndexService bridge
 │   │
+│   ├── srs/                # SRS validation, bootstrap context, draft persistence (Phase 9)
+│   │   └── srs.go          # ValidateStructure, BuildBootstrapContext, WriteDraft/ReadDraft/DeleteDraft, ComputeHash
+│   │
+│   ├── eco/                # ECO validation, category enforcement, file persistence (Phase 9)
+│   │   └── eco.go          # ValidCategory, ValidateProposal, WriteECOFile, ListECOFiles, formatECOMarkdown
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
 │   ├── cli/                # CLI command helpers
 │   ├── doctor/             # System health checks
-│   ├── eco/                # Engineering Change Order management
 │   ├── manifest/           # Output manifest parsing and validation
 │   ├── mergequeue/         # Serialized merge queue
 │   ├── orchestrator/       # Orchestrator lifecycle management
@@ -91,7 +98,6 @@ axiom/
 │   ├── scheduler/          # Task scheduler and lock manager
 │   ├── security/           # Secret scanning, prompt safety, redaction
 │   ├── session/            # Session UX manager
-│   ├── srs/                # SRS generation and approval workflow
 │   ├── task/               # Task system and state transitions
 │   ├── tui/                # Bubble Tea terminal UI
 │   └── validation/         # Validation sandbox management
@@ -229,7 +235,9 @@ Current test coverage by package:
 | `internal/state` | 104 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
 | `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
-| `internal/engine` | 28 | Engine lifecycle (8), run lifecycle (8), status projections (5), worker pool (5), service interface wiring (2) |
+| `internal/srs` | 17 | Structure validation (8), bootstrap context (3), draft persistence (5), hash computation (1) |
+| `internal/eco` | 13 | Category validation (3), proposal validation (5), file persistence (5) |
+| `internal/engine` | 44 | Engine lifecycle (8), run lifecycle (8), SRS lifecycle (9), ECO lifecycle (7), status projections (5), worker pool (5), service interface wiring (2) |
 | `internal/gitops` | 38 | Branch management (8), snapshots (2), dirty/clean checks (6), commit formatting (3), add/commit (4), diffs (6), setup work branch (3), cancel cleanup (3), exit criteria (2), architecture compliance (1) |
 | `internal/ipc` | 24 | Message types (6), envelope serialization (4), directory management (6), spec writers (5), message read/write (3) |
 | `internal/container` | 17 | Container naming (2), hardening flags (7), start/stop lifecycle (4), list/cleanup (3), interface compliance (1) |
@@ -280,7 +288,48 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 6 | Inference Broker, Provider Routing, and Cost Enforcement | Complete |
 | 7 | Model Registry and BitNet Operations | Complete |
 | 8 | Semantic Indexer and Typed Query API | Complete |
-| 9-20 | Remaining phases | Not started |
+| 9 | SRS, ECO, and Bootstrap-Mode Workflow | Complete |
+| 10-20 | Remaining phases | Not started |
+
+### Phase 9 Summary
+
+Phase 9 implemented the SRS approval state machine and ECO lifecycle per Architecture Sections 6, 7, and 8.7:
+
+- **SRS validation** (`srs/srs.go`) — `ValidateStructure` checks that submitted SRS content contains all four required top-level sections from Architecture Section 6.1: Architecture, Requirements & Constraints, Test Strategy, and Acceptance Criteria. Also validates the `# SRS: <Project Name>` title format. Structural validation only — content quality is the orchestrator's responsibility.
+
+- **Bootstrap context** (`srs/srs.go`) — `BuildBootstrapContext` assembles scoped context for SRS generation per Architecture Section 8.7. For greenfield projects: only the project root (no repo-map, no semantic index). For existing projects: project root plus a read-only file listing excluding `.axiom/`, `.git/`, and `node_modules/`. The `BootstrapContext` struct carries `ProjectRoot`, `IsGreenfield`, and `RepoMap`.
+
+- **SRS draft persistence** (`srs/srs.go`) — `WriteDraft`, `ReadDraft`, `DeleteDraft` persist pending SRS drafts as `.axiom/srs-draft-<run-id>.md` files. Supports multiple revision cycles (submit → reject → revise → resubmit) and survives engine restarts.
+
+- **SRS hash computation** (`srs/srs.go`) — `ComputeHash` returns the hex-encoded SHA-256 hash of content, used for both file and database hash storage.
+
+- **Engine SRS methods** (`engine/srs.go`) — Three methods implementing the SRS approval state machine:
+  - `SubmitSRS(runID, content)` — validates structure, persists draft, transitions `draft_srs → awaiting_srs_approval`, emits `srs_submitted`
+  - `ApproveSRS(runID)` — reads draft, writes read-only `.axiom/srs.md` (0o444 permissions) via `project.WriteSRS`, writes `.axiom/srs.md.sha256`, stores hash in `project_runs.srs_hash` via `UpdateRunSRSHash`, transitions `awaiting_srs_approval → active`, deletes draft, emits `srs_approved`
+  - `RejectSRS(runID, feedback)` — transitions `awaiting_srs_approval → draft_srs`, emits `srs_rejected` with feedback. Draft is preserved for revision.
+
+- **ECO validation** (`eco/eco.go`) — `ValidCategory` checks against the 6 allowed codes from Architecture Section 7.2 (ECO-DEP, ECO-API, ECO-SEC, ECO-PLT, ECO-LIC, ECO-PRV). `ValidateProposal` checks category validity plus required fields (description, affected refs, proposed change). `CategoryDescription` returns human-readable names.
+
+- **ECO file persistence** (`eco/eco.go`) — `WriteECOFile` writes append-only markdown records to `.axiom/eco/<ECO-code>.md` matching the format from Architecture Section 7.4 (title with category code, filed timestamp, status, affected sections, environmental issue, proposed substitute, impact assessment). `ListECOFiles` returns sorted filenames.
+
+- **Engine ECO methods** (`engine/eco.go`) — Three methods implementing the ECO lifecycle:
+  - `ProposeECO(proposal)` — validates proposal, verifies run is active or paused, auto-generates sequential ECO codes (ECO-001, ECO-002, ...), creates `eco_log` entry with `proposed` status, emits `eco_proposed`
+  - `ApproveECO(ecoID, approvedBy)` — transitions to `approved`, writes ECO markdown file to `.axiom/eco/`, emits `eco_resolved` with `resolution: approved`
+  - `RejectECO(ecoID)` — transitions to `rejected`, emits `eco_resolved` with `resolution: rejected`
+
+- **State layer additions** — `UpdateRunSRSHash(id, hash)` method added to `state.DB` for storing the SRS SHA-256 hash on a run record.
+
+- **Event additions** — Three new authoritative event types: `srs_submitted`, `srs_approved`, `srs_rejected`. ECO events (`eco_proposed`, `eco_resolved`) were already defined in Phase 3.
+
+- **ECO-to-task integration hooks** — The existing `Task.ECORef` foreign key and `TaskCancelledECO` status provide the hook points for ECO-driven task cancellation and replanning. The actual task replanning logic is the orchestrator's responsibility (Phase 10+).
+
+- **Known deferred items:**
+  - `axiom run "<prompt>"` CLI command wiring (Phase 14)
+  - SRS approval delegation to Claw (engine infrastructure is ready; Claw integration is Phase 16)
+  - SRS hash verification on engine startup (Phase 19)
+  - Full semantic index query access during bootstrap for existing projects (currently provides file listing; full index queries available via `IndexService`)
+
+See [SRS and ECO Reference](srs-eco.md) for the full API.
 
 ### Phase 8 Summary
 
@@ -422,7 +471,7 @@ See [Git Operations Reference](git-operations.md) for the full API.
 Phase 3 built the trusted control plane that all command surfaces use:
 
 - **Event bus** (`internal/events/`) — Central event emitter with two categories of events:
-  - **Authoritative events** (25+ types: `run_created`, `task_started`, `inference_completed`, `provider_unavailable`, etc.) are persisted to the SQLite `events` table as the audit trail (Architecture Section 22.4).
+  - **Authoritative events** (28+ types: `run_created`, `task_started`, `srs_submitted`, `srs_approved`, `srs_rejected`, `inference_completed`, `provider_unavailable`, etc.) are persisted to the SQLite `events` table as the audit trail (Architecture Section 22.4).
   - **View-model events** (8 types: `startup_summary`, `session_mode_changed`, `task_projection_updated`, etc.) are fanned out to in-memory subscribers but NOT persisted (Architecture Section 26.2.10).
   - Subscriber fan-out supports optional filters, buffered channels, and concurrent-safe operation.
   - SQLite writes are serialized via a dedicated write mutex to avoid SQLITE_BUSY under concurrent publishes.

@@ -106,6 +106,19 @@ func (d *DB) UpdateRunStatus(id string, to RunStatus) error {
 	})
 }
 
+// UpdateRunSRSHash stores the SRS SHA-256 hash on a run record.
+func (d *DB) UpdateRunSRSHash(id string, hash string) error {
+	res, err := d.Exec(`UPDATE project_runs SET srs_hash = ? WHERE id = ?`, hash, id)
+	if err != nil {
+		return fmt.Errorf("updating SRS hash: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // scanRun scans a single row from *sql.Row into a ProjectRun.
 func scanRun(row *sql.Row) (*ProjectRun, error) {
 	var r ProjectRun

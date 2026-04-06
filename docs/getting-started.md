@@ -137,11 +137,24 @@ Axiom runs all untrusted agents (Meeseeks workers, reviewers, validators) in Doc
 
 See [IPC & Container Lifecycle Reference](ipc-container.md) for details.
 
+## SRS and ECO Workflow
+
+Before autonomous execution begins, the orchestrator generates a Software Requirements Specification (SRS) that must be approved. The SRS is the immutable scope contract for the run.
+
+**SRS flow:** The orchestrator generates an SRS draft → the engine validates its structure → the user reviews and approves or rejects → on approval, the SRS is written as a read-only file with SHA-256 integrity verification → the run transitions to active.
+
+**ECO flow:** If environmental issues arise during execution (broken dependencies, API changes), the orchestrator proposes an Engineering Change Order (ECO). ECOs are strictly limited to 6 categories (dependency, API, security, platform, license, provider). ECOs are recorded as append-only markdown files under `.axiom/eco/` and never modify the original SRS.
+
+See [SRS and ECO Reference](srs-eco.md) for the full API and lifecycle details.
+
 ## What's Next
 
 The following features are implemented in later phases:
 
-- `axiom run "<prompt>"` — start autonomous execution (Phase 9+)
+- `axiom run "<prompt>"` — CLI command to start a run (Phase 14; engine SRS flow available since Phase 9)
+- Task decomposition and scheduling (Phase 10)
+- Manifest validation and review pipeline (Phase 11)
+- Merge queue (Phase 12)
 - `axiom tui` — interactive terminal UI (Phase 15)
 - `axiom api start` — external orchestration API (Phase 16)
 - `axiom doctor` — system health checks (Phase 19)

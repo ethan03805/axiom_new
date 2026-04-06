@@ -110,6 +110,26 @@ The engine provides run lifecycle methods that enforce state machine transitions
 | Complete run | `active` -> `completed` | `run_completed` |
 | Fail run | `active` -> `error` | `run_error` |
 
+## Engine SRS Lifecycle (Phase 9)
+
+The SRS approval state machine governs how a run transitions from draft to active execution. See [SRS and ECO Reference](srs-eco.md) for details.
+
+| Operation | State Transition | Event Emitted |
+|-----------|-----------------|---------------|
+| Submit SRS | `draft_srs` -> `awaiting_srs_approval` | `srs_submitted` |
+| Approve SRS | `awaiting_srs_approval` -> `active` | `srs_approved` |
+| Reject SRS | `awaiting_srs_approval` -> `draft_srs` | `srs_rejected` |
+
+## Engine ECO Lifecycle (Phase 9)
+
+ECOs allow controlled environmental changes during execution without modifying the immutable SRS.
+
+| Operation | State Transition | Event Emitted |
+|-----------|-----------------|---------------|
+| Propose ECO | (new) -> `proposed` | `eco_proposed` |
+| Approve ECO | `proposed` -> `approved` | `eco_resolved` |
+| Reject ECO | `proposed` -> `rejected` | `eco_resolved` |
+
 ## Planned Commands (Not Yet Implemented)
 
 These commands are defined in the architecture and will be implemented in later phases:
@@ -117,8 +137,8 @@ These commands are defined in the architecture and will be implemented in later 
 ### Project Commands
 | Command | Phase | Description |
 |---------|-------|-------------|
-| `axiom run "<prompt>"` | 9 | Start a new project run |
-| `axiom run --budget <usd> "<prompt>"` | 9 | Start with specific budget |
+| `axiom run "<prompt>"` | 14 | Start a new project run (engine SRS flow available since Phase 9) |
+| `axiom run --budget <usd> "<prompt>"` | 14 | Start with specific budget |
 | `axiom pause` | 14 | Pause execution (engine method available since Phase 3) |
 | `axiom resume` | 14 | Resume paused execution (engine method available since Phase 3) |
 | `axiom cancel` | 14 | Cancel execution (engine method available since Phase 3) |

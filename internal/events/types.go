@@ -40,6 +40,10 @@ const (
 	BudgetWarning  EventType = "budget_warning"
 	BudgetExceeded EventType = "budget_exceeded"
 
+	SRSSubmitted EventType = "srs_submitted"
+	SRSApproved  EventType = "srs_approved"
+	SRSRejected  EventType = "srs_rejected"
+
 	InferenceRequested   EventType = "inference_requested"
 	InferenceCompleted   EventType = "inference_completed"
 	InferenceFailed      EventType = "inference_failed"

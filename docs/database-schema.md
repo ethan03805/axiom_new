@@ -496,7 +496,7 @@ failed → queued   (retry or escalation per Section 15.4)
 `CreateProject`, `GetProject`, `GetProjectByRootPath`, `ListProjects`
 
 **Runs** (`runs.go`):
-`CreateRun`, `GetRun`, `GetActiveRun`, `ListRunsByProject`, `UpdateRunStatus`
+`CreateRun`, `GetRun`, `GetActiveRun`, `ListRunsByProject`, `UpdateRunStatus`, `UpdateRunSRSHash`
 
 **Tasks** (`tasks.go`):
 `CreateTask`, `GetTask`, `ListTasksByRun`, `ListTasksByStatus`, `UpdateTaskStatus`, `AddTaskDependency`, `GetTaskDependencies`, `AddTaskSRSRef`, `GetTaskSRSRefs`, `AddTaskTargetFile`, `GetTaskTargetFiles`, `AcquireLock`, `ReleaseLock`, `ReleaseTaskLocks`, `GetTaskLocks`, `AddLockWait`, `RemoveLockWait`, `ListLockWaits`
