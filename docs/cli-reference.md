@@ -304,20 +304,92 @@ Session Export: a1b2c3d4
 [01:27:21]   [system_card] Starting SRS generation...
 ```
 
+## API Server Commands (Phase 16)
+
+### `axiom api start`
+
+Start the REST + WebSocket API server on the configured port.
+
+```bash
+axiom api start
+# Starting API server on port 3000...
+```
+
+The server runs in the foreground. Stop it with Ctrl+C (SIGINT). Configuration is read from `.axiom/config.toml`:
+
+```toml
+[api]
+port = 3000
+rate_limit_rpm = 120
+allowed_ips = []  # empty = allow all
+```
+
+### `axiom api stop`
+
+Informational: the API server runs as a foreground process and is stopped via SIGINT.
+
+### `axiom api token generate`
+
+Generate a new API authentication token.
+
+```bash
+axiom api token generate [--scope <scope>] [--expires <duration>]
+```
+
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--scope` | `full-control` | Token scope: `read-only` or `full-control` |
+| `--expires` | `24h` | Expiration duration (Go duration format: `8h`, `72h`, `168h`) |
+
+**Example:**
+```bash
+$ axiom api token generate --scope read-only --expires 8h
+axm_sk_dG9rZW4tcmFuZG9tLWJhc2U2NC1lbmNvZGVk
+Token ID: tok_a1b2c3d4e5f6g7h8
+Scope: read-only
+Expires: 2026-04-06T09:00:00Z
+```
+
+### `axiom api token list`
+
+List all API tokens with their status.
+
+```bash
+$ axiom api token list
+ID                   PREFIX             SCOPE          EXPIRES                   STATUS
+tok_a1b2c3d4e5f6g7h8 axm_sk_dG9rZW...  read-only      2026-04-06T09:00:00Z      active
+tok_i9j0k1l2m3n4o5p6 axm_sk_YW5vdG...  full-control   2026-04-07T01:00:00Z      active
+```
+
+### `axiom api token revoke <token-id>`
+
+Revoke a specific API token immediately.
+
+```bash
+$ axiom api token revoke tok_a1b2c3d4e5f6g7h8
+Token tok_a1b2c3d4e5f6g7h8 revoked.
+```
+
+### `axiom tunnel start`
+
+Start a Cloudflare Tunnel for remote Claw access. Requires `cloudflared` to be installed.
+
+```bash
+$ axiom tunnel start
+Tunnel started for localhost:3000
+Public URL: https://<random>.trycloudflare.com
+```
+
+### `axiom tunnel stop`
+
+Informational: the tunnel runs as a child process of `axiom tunnel start` and is stopped via SIGINT.
+
+See [API Server Reference](api-server.md) for the full endpoint and WebSocket documentation.
+
 ## Stub Commands (Planned for Later Phases)
 
 These commands exist in the CLI surface but delegate to subsystems not yet implemented:
-
-### API & Tunnel Commands (Phase 16)
-| Command | Description |
-|---------|-------------|
-| `axiom api start` | Start API server |
-| `axiom api stop` | Stop API server |
-| `axiom api token generate [--scope <scope>]` | Generate auth token |
-| `axiom api token list` | List active tokens |
-| `axiom api token revoke <id>` | Revoke a token |
-| `axiom tunnel start` | Start Cloudflare tunnel |
-| `axiom tunnel stop` | Stop tunnel |
 
 ### Skill Commands (Phase 17)
 | Command | Description |

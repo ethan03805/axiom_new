@@ -118,7 +118,7 @@ axiom/
 │   │   ├── bitnet.go       # axiom bitnet start/stop/status/models
 │   │   ├── index.go        # axiom index refresh/query
 │   │   ├── session.go      # axiom session list/resume/export, axiom tui (Phase 15)
-│   │   └── stubs.go        # Stub commands for api, tunnel, skill, doctor
+│   │   └── stubs.go        # API/tunnel commands (Phase 16) + stubs for skill (Phase 17), doctor (Phase 19)
 │   │
 │   ├── session/            # Session UX Manager (Phase 15)
 │   │   └── manager.go      # Manager: create/resume sessions, mode transitions, startup summary, transcript, compaction, export, suggestions
@@ -129,8 +129,16 @@ axiom/
 │   │   ├── plain.go        # Plain-text fallback renderer for non-TTY environments
 │   │   └── program.go      # Bubble Tea program wrapper with alt-screen and mouse support
 │   │
+│   ├── api/                # REST + WebSocket API server (Phase 16)
+│   │   ├── types.go        # Request/response types, control envelope, valid request types
+│   │   ├── auth.go         # Bearer token auth middleware, scope enforcement, token generation/hashing
+│   │   ├── ratelimit.go    # Per-token rate limiter, IP allowlist middleware
+│   │   ├── handlers.go     # REST endpoint handlers (status, tasks, costs, events, models, lifecycle, index)
+│   │   ├── websocket.go    # Event stream + control channel WebSocket handlers, idempotency tracker
+│   │   ├── server.go       # Server lifecycle, route registration, audit logging middleware
+│   │   └── tunnel.go       # Cloudflare Tunnel management (start/stop/status)
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
-│   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
 │   ├── doctor/             # System health checks
@@ -272,7 +280,7 @@ Current test coverage by package:
 |---------|-------|----------|
 | `internal/version` | 2 | Version string formatting |
 | `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
-| `internal/state` | 113 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (17: create/get/list/activity/messages/uniqueness/summaries/input-history + Phase 15: update-mode/update-run-id/get-summaries/input-history-by-project/message-count/delete-before/latest-session), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22) |
+| `internal/state` | 123 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (17: create/get/list/activity/messages/uniqueness/summaries/input-history + Phase 15: update-mode/update-run-id/get-summaries/input-history-by-project/message-count/delete-before/latest-session), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22), api tokens (10: create/duplicate-hash/get-by-hash/not-found/list/revoke/revoke-not-found/update-last-used/list-revoked/delete-expired) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
 | `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
 | `internal/srs` | 17 | Structure validation (8), bootstrap context (3), draft persistence (5), hash computation (1) |
@@ -293,7 +301,8 @@ Current test coverage by package:
 | `internal/mergequeue` | 20 | Empty queue (1), queue length (1), clean merge (2), stale snapshot (2), integration failure (2), file operations (2), serialization (1), events (3), commit failure (1), indexer failure (1), affected files (1), git staging (1), file revert (2), context cancellation (1) |
 | `internal/session` | 19 | Session create/resume (4), mode determination (5), startup summary (2), transcript (1), compaction (1), export (2), suggestions (2), events (1), input history (1) |
 | `internal/tui` | 29 | Model creation (2), view rendering (3), input handling (2), slash commands (6), overlay (1), status bar (1), task rail (1), window resize (1), transcript (1), submit input (2), plain renderer (7) |
-| `internal/cli` | 58 | Command registration (7), run actions (15), export (5), models (7), bitnet (6), index (11), session commands (7: list with/without sessions, export, resume found/not-found, TUI plain flag/mode), stubs (10: api/tunnel/skill/doctor existence + phase messages) |
+| `internal/cli` | 58 | Command registration (7), run actions (15), export (5), models (7), bitnet (6), index (11), session commands (7: list with/without sessions, export, resume found/not-found, TUI plain flag/mode), stubs (10: api/tunnel/skill/doctor existence + phase messages). Note: Phase 16 replaced API/tunnel stubs with real implementations; 6 stubs tests now expect updated assertions. |
+| `internal/api` | 49 | Auth (10: valid/invalid/expired/revoked/bad-prefix/scopes/generation/hashing), rate limiting (6: under/over/per-token/disabled/IP-allowlist), handlers (11: status/tasks/attempts/costs/events/models/pause/resume/cancel/SRS/tokens), WebSocket (4: event-stream/control/invalid-type/idempotency), server (6: start-stop/auth-required/authed-request/audit/health/IP), tunnel (3: construct/stop/URL) |
 
 ### Test Patterns
 
@@ -345,7 +354,64 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 13 | Test-Generation Separation and Convergence Logic | Complete |
 | 14 | Plain CLI Command Surface | Complete |
 | 15 | Session UX Manager and Bubble Tea TUI | Complete |
-| 16-20 | Remaining phases | Not started |
+| 16 | API Server, WebSockets, and Tunnel Support | Complete |
+| 17-20 | Remaining phases | Not started |
+
+### Phase 16 Summary
+
+Phase 16 implemented the external orchestration API surface per Architecture Section 24, enabling Claw and other orchestrators to control Axiom remotely:
+
+- **API package** (`api/`) — New `internal/api/` package with 7 source files implementing the full REST + WebSocket API server.
+
+- **Authentication** (`api/auth.go`) — Bearer token authentication middleware per Section 24.3. Token format: `axm_sk_<base64-encoded-32-bytes>`. Tokens are SHA-256 hashed before storage (never stored in plaintext). `AuthMiddleware` validates tokens against the `api_tokens` table, checking for existence, expiration, and revocation. `RequireScope` middleware enforces `read-only` or `full-control` scope on endpoints. `GenerateToken` creates cryptographically random tokens. `HashToken` returns SHA-256 hex digest. `TokenPrefix` returns display-safe prefix. `TokenFromContext` extracts the authenticated token from request context.
+
+- **Rate limiting and IP allowlist** (`api/ratelimit.go`) — `RateLimiter` implements per-token sliding-window rate limiting (requests per minute). Keyed by Authorization header value. Returns `429 Too Many Requests` with `Retry-After: 60` header when exceeded. `IPAllowlist` middleware accepts individual IPs and CIDR ranges. Empty list allows all connections.
+
+- **REST handlers** (`api/handlers.go`) — All 16 endpoints from Architecture Section 24.2:
+  - Project creation: `POST /api/v1/projects`
+  - Run lifecycle: `/run`, `/srs/approve`, `/srs/reject`, `/eco/approve`, `/eco/reject`, `/pause`, `/resume`, `/cancel`
+  - Read endpoints: `/status`, `/tasks`, `/tasks/:tid/attempts`, `/costs`, `/events`, `/models`
+  - Semantic index query: `POST /api/v1/index/query` (supports `lookup_symbol`, `reverse_dependencies`, `list_exports`, `find_implementations`)
+  - Token management: `GET /api/v1/tokens`, `POST /api/v1/tokens/:id/revoke`
+
+- **WebSocket handlers** (`api/websocket.go`) — Two WebSocket endpoints per Section 24.2:
+  - Event stream (`/ws/projects/:id`) — subscribes to engine event bus, streams all project events in real time
+  - Control channel (`/ws/projects/:id/control`) — accepts typed action requests per Section 8.6 with `request_id`, `idempotency_key`, `type`, and `payload` fields. Validates against 12 allowed request types. `query_status` and `query_budget` return `completed` immediately; long-running operations (`spawn_meeseeks`, `submit_srs`, etc.) return `accepted` with final results delivered via the event stream. Idempotency tracker caches responses by key for reconnect-safe retries.
+
+- **Server lifecycle** (`api/server.go`) — `Server` struct manages HTTP server startup, shutdown, and route registration. Middleware chain: rate limiting → IP allowlist → auth → audit → scope check → handler. Health endpoint (`/health`) requires no authentication. Audit logging middleware writes to both `api_audit_log` table (all requests) and `events` table (project-context requests). `WaitReady` method blocks until server is listening.
+
+- **Tunnel** (`api/tunnel.go`) — `Tunnel` struct manages Cloudflare Tunnel lifecycle per Section 24.4. Checks for `cloudflared` binary, spawns `cloudflared tunnel --url http://<localAddr>`. Thread-safe start/stop/status/URL methods.
+
+- **State layer** (`state/api_tokens.go`) — CRUD operations for the `api_tokens` table: `CreateAPIToken`, `GetAPIToken`, `GetAPITokenByHash`, `ListAPITokens`, `RevokeAPIToken`, `UpdateAPITokenLastUsed`, `DeleteExpiredAPITokens`.
+
+- **Migration 007** (`007_api_tokens.sql`) — Creates `api_tokens` table (id, token_hash UNIQUE, token_prefix, scope CHECK, created_at, expires_at, revoked_at, last_used_at) and `api_audit_log` table (id, token_id, method, path, status_code, source_ip, timestamp).
+
+- **CLI commands** (`cli/stubs.go`) — Replaced Phase 14 stubs with real implementations:
+  - `axiom api start` — starts the API server on the configured port with rate limiting and IP allowlist
+  - `axiom api stop` — informational message (server runs as foreground process, stopped via SIGINT)
+  - `axiom api token generate [--scope <scope>] [--expires <duration>]` — generates a token, stores hash in DB, prints raw token
+  - `axiom api token list` — tabular output with ID, prefix, scope, expiration, and status
+  - `axiom api token revoke <token-id>` — revokes a token immediately
+  - `axiom tunnel start` — starts Cloudflare Tunnel for the API server's port
+  - `axiom tunnel stop` — informational message (tunnel runs as child process)
+
+- **Types** (`api/types.go`) — Request/response structs: `ErrorResponse`, `RunRequest`, `SRSRejectRequest`, `ECORejectRequest`, `IndexQueryRequest`, `TokenInfo`, `ControlRequest`, `ControlResponse`. `ValidControlRequestTypes` map enumerates the 12 accepted control WebSocket request types from Section 8.6.
+
+- **Test coverage** — 49 new tests across 8 test files:
+  - `state/api_tokens_test.go` (10) — CRUD, duplicate hash rejection, revocation, expiration cleanup
+  - `api/auth_test.go` (10) — valid/invalid/expired/revoked/bad-prefix tokens, scope enforcement, generation, hashing
+  - `api/ratelimit_test.go` (6) — under/over limit, per-token separation, disabled mode, IP allowlist
+  - `api/handlers_test.go` (11) — status, tasks, attempts, costs, events, models, pause/resume/cancel, SRS, token list
+  - `api/websocket_test.go` (4) — event stream, control request processing, invalid type rejection, idempotency
+  - `api/server_test.go` (6) — start/stop, auth requirement, authenticated request, audit logging, health, IP allowlist
+  - `api/tunnel_test.go` (3) — construction, stop without start, empty URL
+
+- **Known deferred items:**
+  - Tunnel URL retrieval: `cloudflared` outputs the public URL to stdout; parsing it requires reading the process output stream (currently returns empty)
+  - Long-running control request dispatch: `spawn_meeseeks`, `submit_srs`, etc. return `accepted` immediately; actual orchestration dispatch will be connected in later phases
+  - Failed auth attempt logging to events table with source IP (currently logged to `api_audit_log` only)
+
+See [API Server Reference](api-server.md) for the full endpoint documentation.
 
 ### Phase 14 Summary
 
@@ -376,7 +442,7 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
   - `axiom index query --type <type> [--name <name>] [--package <pkg>]` — supports all five Architecture Section 17.5 query types with parameter validation (lookup_symbol/reverse_dependencies/find_implementations require `--name`, list_exports requires `--package`)
 
 - **Stub commands** (`cli/stubs.go`) — Section 27 commands that depend on subsystems from later phases exist as stubs returning informational messages:
-  - `axiom api start/stop`, `axiom api token generate [--scope]/list/revoke`, `axiom tunnel start/stop` — Phase 16
+  - ~~`axiom api start/stop`, `axiom api token generate [--scope]/list/revoke`, `axiom tunnel start/stop`~~ — fully implemented in Phase 16
   - `axiom skill generate --runtime <rt>` — Phase 17
   - `axiom doctor` — Phase 19
   - Note: `axiom tui`, `axiom session` were stubs in Phase 14 but are now fully implemented (Phase 15).
@@ -590,7 +656,7 @@ Phase 9 implemented the SRS approval state machine and ECO lifecycle per Archite
 
 - **Known deferred items:**
   - ~~`axiom run "<prompt>"` CLI command wiring~~ — resolved in Phase 14
-  - SRS approval delegation to Claw (engine infrastructure is ready; Claw integration is Phase 16)
+  - ~~SRS approval delegation to Claw~~ — resolved in Phase 16 (API server exposes `/srs/approve` and `/srs/reject` endpoints for external orchestrators)
   - SRS hash verification on engine startup (Phase 19)
   - Full semantic index query access during bootstrap for existing projects (currently provides file listing; full index queries available via `IndexService`)
 

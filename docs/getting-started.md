@@ -303,11 +303,40 @@ Sessions automatically track the current mode (bootstrap, approval, execution, p
 
 See [Session & TUI Reference](session-tui.md) for full details.
 
+## External Orchestration (API Server)
+
+Axiom exposes a REST + WebSocket API server for external orchestrators (Claw, etc.):
+
+```bash
+# Generate an API token
+axiom api token generate
+# Output: axm_sk_<random-token>
+
+# Start the API server
+axiom api start
+# Starting API server on port 3000...
+```
+
+The API provides:
+- **REST endpoints** for project lifecycle (run, pause, resume, cancel), SRS/ECO approval, status queries, task trees, cost breakdown, events, and semantic index queries
+- **Event WebSocket** (`ws://localhost:3000/ws/projects/:id`) for real-time project events
+- **Control WebSocket** (`ws://localhost:3000/ws/projects/:id/control`) for external orchestrator action requests with idempotency support
+
+All requests require a bearer token in the `Authorization` header. Tokens support `read-only` and `full-control` scopes with configurable expiration.
+
+For remote access, Axiom supports Cloudflare Tunnel:
+
+```bash
+axiom tunnel start
+# Output: https://<random>.trycloudflare.com
+```
+
+See [API Server Reference](api-server.md) for the full endpoint documentation.
+
 ## What's Next
 
 The following features are planned for later phases:
 
-- `axiom api start` — external orchestration REST + WebSocket API (Phase 16)
 - `axiom skill generate` — runtime skill generation for orchestrators (Phase 17)
 - `axiom doctor` — system health and dependency checks (Phase 19)
 

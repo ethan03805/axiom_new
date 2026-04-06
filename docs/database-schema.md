@@ -29,6 +29,7 @@ Current migrations:
 - `004_semantic_index.sql` — adds semantic index tables for symbol/export/dependency tracking (Phase 8)
 - `005_attempt_tier.sql` — adds `tier` column to `task_attempts` for per-tier retry counting (Phase 10)
 - `006_convergence_pairs.sql` — adds `convergence_pairs` table for test-generation separation and convergence tracking (Phase 13)
+- `007_api_tokens.sql` — adds `api_tokens` table for API authentication tokens and `api_audit_log` table for request audit logging (Phase 16)
 
 ## Table Reference
 
@@ -479,6 +480,35 @@ fixing  → blocked       (fix retries exhausted)
 pending → blocked       (unable to create test task)
 ```
 
+### API Authentication (Phase 16)
+
+#### `api_tokens`
+API authentication tokens for external orchestration. Per Architecture Section 24.3.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | TEXT | PRIMARY KEY | Token identifier (e.g., "tok_a1b2c3d4e5f6g7h8") |
+| `token_hash` | TEXT | NOT NULL UNIQUE | SHA-256 hash of the raw token (never stored in plaintext) |
+| `token_prefix` | TEXT | NOT NULL | Display-safe prefix (e.g., "axm_sk_dG9rZW...") |
+| `scope` | TEXT | NOT NULL DEFAULT 'full-control', CHECK | `read-only` or `full-control` |
+| `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Token creation time |
+| `expires_at` | DATETIME | NOT NULL | Expiration time (default: 24 hours from creation) |
+| `revoked_at` | DATETIME | | When the token was revoked (NULL if active) |
+| `last_used_at` | DATETIME | | Last time the token was used for authentication |
+
+#### `api_audit_log`
+Audit trail for all API requests. Separate from the `events` table because `events` requires a valid `run_id` foreign key. Per Architecture Section 24.3.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| `token_id` | TEXT | | Requesting token ID (not the raw token value) |
+| `method` | TEXT | NOT NULL | HTTP method (GET, POST, etc.) |
+| `path` | TEXT | NOT NULL | Request URL path |
+| `status_code` | INTEGER | NOT NULL | Response HTTP status code |
+| `source_ip` | TEXT | | Client IP address |
+| `timestamp` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Request time |
+
 ## Repository API
 
 All database access goes through typed repository methods on the `state.DB` struct. These provide CRUD operations, status transition enforcement, and transactional safety.
@@ -563,6 +593,9 @@ failed → queued   (retry or escalation per Section 15.4)
 **Convergence** (`convergence.go`):
 `CreateConvergencePair`, `GetConvergencePair`, `GetConvergencePairByImplTask`, `GetConvergencePairByTestTask`, `UpdateConvergencePairStatus`, `SetConvergenceTestTask`, `SetConvergenceFixTask`, `IncrementConvergenceIteration`, `ListConvergencePairsByRun`
 
+**API Tokens** (`api_tokens.go`):
+`CreateAPIToken`, `GetAPIToken`, `GetAPITokenByHash`, `ListAPITokens`, `RevokeAPIToken`, `UpdateAPITokenLastUsed`, `DeleteExpiredAPITokens`
+
 ### Sentinel Errors
 
 | Error | Meaning |
@@ -593,6 +626,8 @@ ui_sessions 1──* ui_messages
 ui_sessions 1──* ui_session_summaries
 projects 1──* ui_input_history
 model_registry            (standalone — no FK relationships)
+api_tokens                (standalone — no FK relationships)
+api_audit_log             (standalone — token_id is informational, not FK-constrained)
 index_files 1──* index_symbols
 index_files 1──* index_imports
 index_files 1──* index_references
