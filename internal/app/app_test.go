@@ -58,6 +58,9 @@ func TestOpenDiscoversProjectFromSubdirectoryAndRunsRecovery(t *testing.T) {
 		if application.Engine == nil {
 			t.Fatal("expected engine to be initialized")
 		}
+		if !application.Engine.Running() {
+			t.Fatal("engine should be running after Open")
+		}
 		if application.Registry == nil {
 			t.Fatal("expected model registry to be initialized")
 		}
@@ -73,6 +76,35 @@ func TestOpenDiscoversProjectFromSubdirectoryAndRunsRecovery(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("staging entries after recovery = %d, want 0", len(entries))
 	}
+}
+
+func TestApp_Close_StopsEngine(t *testing.T) {
+	repoDir, err := testfixtures.Materialize("existing-go")
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(repoDir)) })
+
+	if err := project.Init(repoDir, "fixture-close"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	withWorkingDir(t, repoDir, func() {
+		application, err := Open(slog.Default())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+
+		if !application.Engine.Running() {
+			t.Fatal("engine should be running after Open")
+		}
+
+		application.Close()
+
+		if application.Engine.Running() {
+			t.Fatal("engine should not be running after Close")
+		}
+	})
 }
 
 func withWorkingDir(t *testing.T, dir string, fn func()) {

@@ -100,6 +100,13 @@ func Open(log *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("running startup recovery: %w", err)
 	}
 
+	// Start engine background workers (scheduler, merge queue).
+	// Workers are stopped by App.Close() → Engine.Stop().
+	if err := eng.Start(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("starting engine: %w", err)
+	}
+
 	return &App{
 		Config:      cfg,
 		DB:          db,

@@ -239,6 +239,39 @@ func TestEngine_StopIdempotent(t *testing.T) {
 	e.Stop()
 }
 
+func TestEngine_StartWithoutRecover(t *testing.T) {
+	// Verify Start() works cleanly without a prior Recover() call,
+	// since we removed the internal Recover() from Start().
+	e := testEngine(t)
+
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatalf("Start without prior Recover: %v", err)
+	}
+	defer e.Stop()
+
+	if !e.Running() {
+		t.Error("engine should be running")
+	}
+}
+
+func TestEngine_StartIdempotent(t *testing.T) {
+	e := testEngine(t)
+
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	// Second Start should be a no-op
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatalf("second Start should not fail: %v", err)
+	}
+
+	if !e.Running() {
+		t.Error("engine should still be running")
+	}
+}
+
 func TestEngine_EventBusWired(t *testing.T) {
 	e := testEngine(t)
 

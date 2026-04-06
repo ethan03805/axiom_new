@@ -212,6 +212,19 @@ func TestServer_IPAllowlist(t *testing.T) {
 	}
 }
 
+func TestServer_RejectsStartWithoutEngine(t *testing.T) {
+	eng, db := testEngineNotStarted(t)
+	cfg := ServerConfig{Port: 0, RateLimitRPM: 120}
+
+	srv := NewServer(eng, db, cfg)
+
+	err := srv.Start(context.Background())
+	if err == nil {
+		srv.Stop()
+		t.Fatal("expected error when engine not running")
+	}
+}
+
 func getFreePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")

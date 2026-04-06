@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -15,8 +16,31 @@ import (
 	"github.com/openaxiom/axiom/internal/state"
 )
 
-// testEngine creates a minimal engine with a test database.
+// testEngine creates a minimal engine with a test database and starts background workers.
 func testEngine(t *testing.T) (*engine.Engine, *state.DB) {
+	t.Helper()
+	db := testDB(t)
+	cfg := config.Default("test-project", "test-project")
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	eng, err := engine.New(engine.Options{
+		Config:  &cfg,
+		DB:      db,
+		RootDir: t.TempDir(),
+		Log:     log,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { eng.Stop() })
+	return eng, db
+}
+
+// testEngineNotStarted creates a minimal engine without starting background workers.
+func testEngineNotStarted(t *testing.T) (*engine.Engine, *state.DB) {
 	t.Helper()
 	db := testDB(t)
 	cfg := config.Default("test-project", "test-project")

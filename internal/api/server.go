@@ -49,7 +49,12 @@ func NewServer(eng *engine.Engine, db *state.DB, cfg ServerConfig) *Server {
 }
 
 // Start starts the API server. Blocks until the context is cancelled or the server errors.
+// Returns an error if the engine's background workers are not running.
 func (s *Server) Start(ctx context.Context) error {
+	if !s.eng.Running() {
+		return fmt.Errorf("engine is not running; call Engine.Start() before starting the API server")
+	}
+
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 
