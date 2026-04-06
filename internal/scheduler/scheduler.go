@@ -23,6 +23,13 @@ type SnapshotProvider interface {
 	CurrentHEAD() (string, error)
 }
 
+// FamilyExcluder provides model family exclusion for test-generation separation.
+// Per Architecture Section 11.5: test tasks must use a different model family
+// than the implementation task that produced the code under test.
+type FamilyExcluder interface {
+	GetExcludeFamily(ctx context.Context, taskID string) (string, error)
+}
+
 // Options configures a new Scheduler.
 type Options struct {
 	DB               *state.DB
@@ -30,6 +37,7 @@ type Options struct {
 	MaxMeeseeks      int
 	ModelSelector    ModelSelector
 	SnapshotProvider SnapshotProvider
+	FamilyExcluder   FamilyExcluder
 }
 
 // Scheduler manages the dispatch loop for task execution.
@@ -39,11 +47,12 @@ type Options struct {
 // - Moves tasks to in_progress and creates attempt records
 // - Manages waiting_on_lock transitions and requeue on lock release
 type Scheduler struct {
-	db            *state.DB
-	log           *slog.Logger
-	maxMeeseeks   int
-	modelSelector ModelSelector
-	snapshotProv  SnapshotProvider
+	db             *state.DB
+	log            *slog.Logger
+	maxMeeseeks    int
+	modelSelector  ModelSelector
+	snapshotProv   SnapshotProvider
+	familyExcluder FamilyExcluder
 }
 
 // New creates a new Scheduler.
@@ -55,11 +64,12 @@ func New(opts Options) *Scheduler {
 		opts.MaxMeeseeks = 3
 	}
 	return &Scheduler{
-		db:            opts.DB,
-		log:           opts.Log,
-		maxMeeseeks:   opts.MaxMeeseeks,
-		modelSelector: opts.ModelSelector,
-		snapshotProv:  opts.SnapshotProvider,
+		db:             opts.DB,
+		log:            opts.Log,
+		maxMeeseeks:    opts.MaxMeeseeks,
+		modelSelector:  opts.ModelSelector,
+		snapshotProv:   opts.SnapshotProvider,
+		familyExcluder: opts.FamilyExcluder,
 	}
 }
 
@@ -259,8 +269,19 @@ func (s *Scheduler) tryAcquireLocks(taskID string, reqs []lockRequest) (bool, st
 
 // dispatch moves a task to in_progress and creates a new attempt record.
 func (s *Scheduler) dispatch(ctx context.Context, task *state.Task) error {
+	// Determine model family exclusion for test-generation separation (Section 11.5)
+	var excludeFamily string
+	if s.familyExcluder != nil {
+		ef, err := s.familyExcluder.GetExcludeFamily(ctx, task.ID)
+		if err != nil {
+			s.log.Warn("failed to get exclude family", "task_id", task.ID, "error", err)
+		} else {
+			excludeFamily = ef
+		}
+	}
+
 	// Select model for this tier
-	modelID, modelFamily, err := s.modelSelector.SelectModel(ctx, task.Tier, "")
+	modelID, modelFamily, err := s.modelSelector.SelectModel(ctx, task.Tier, excludeFamily)
 	if err != nil {
 		return fmt.Errorf("selecting model: %w", err)
 	}

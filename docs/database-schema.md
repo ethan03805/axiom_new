@@ -28,6 +28,7 @@ Current migrations:
 - `003_model_registry.sql` — adds `model_registry` table for model catalog (Phase 7)
 - `004_semantic_index.sql` — adds semantic index tables for symbol/export/dependency tracking (Phase 8)
 - `005_attempt_tier.sql` — adds `tier` column to `task_attempts` for per-tier retry counting (Phase 10)
+- `006_convergence_pairs.sql` — adds `convergence_pairs` table for test-generation separation and convergence tracking (Phase 13)
 
 ## Table Reference
 
@@ -444,6 +445,40 @@ CREATE INDEX idx_index_files_path ON index_files(path);
 CREATE INDEX idx_index_packages_path ON index_packages(path);
 ```
 
+### Convergence Tracking (Phase 13)
+
+#### `convergence_pairs`
+Links implementation tasks to their test-generation and fix tasks for convergence tracking. Per Architecture Section 11.5: completion criteria require both the implementation and its generated tests to converge.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| `impl_task_id` | TEXT | NOT NULL, FK → tasks | Implementation task |
+| `test_task_id` | TEXT | FK → tasks | Test-generation task |
+| `fix_task_id` | TEXT | FK → tasks | Implementation-fix task (after test failure) |
+| `status` | TEXT | NOT NULL DEFAULT 'pending' | pending, testing, fixing, converged, blocked |
+| `impl_model_family` | TEXT | NOT NULL | Model family used for implementation (excluded for test task) |
+| `iteration` | INTEGER | NOT NULL DEFAULT 1 | Fix loop iteration count |
+| `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | |
+| `converged_at` | DATETIME | | Timestamp when convergence was achieved |
+
+**Indexes:**
+```sql
+CREATE INDEX idx_convergence_impl ON convergence_pairs(impl_task_id);
+CREATE INDEX idx_convergence_test ON convergence_pairs(test_task_id);
+CREATE INDEX idx_convergence_status ON convergence_pairs(status);
+```
+
+**Status lifecycle:**
+```
+pending → testing       (test task created)
+testing → fixing        (test task failed, fix task created)
+testing → converged     (test task passed)
+fixing  → converged     (fix merged and tests pass)
+fixing  → blocked       (fix retries exhausted)
+pending → blocked       (unable to create test task)
+```
+
 ## Repository API
 
 All database access goes through typed repository methods on the `state.DB` struct. These provide CRUD operations, status transition enforcement, and transactional safety.
@@ -465,6 +500,7 @@ Every table has a corresponding Go struct in `internal/state/models.go`. Typed s
 | `SessionMode` | `bootstrap`, `approval`, `execution`, `postrun` |
 | `SymbolKind` | `function`, `type`, `interface`, `constant`, `variable`, `field`, `method` |
 | `UsageType` | `call`, `reference`, `implementation` |
+| `ConvergenceStatus` | `pending`, `testing`, `fixing`, `converged`, `blocked` |
 
 ### Status Transition Invariants
 
@@ -524,6 +560,9 @@ failed → queued   (retry or escalation per Section 15.4)
 **Semantic Index** (`index.go`):
 `CreateIndexFile`, `GetIndexFile`, `DeleteIndexFile`, `UpdateIndexFileHash`, `ListIndexFiles`, `ClearIndex`, `CreateIndexSymbol`, `ListSymbolsByFile`, `LookupSymbol`, `ListExportedSymbolsByPackageDir`, `FindImplementations`, `CreateIndexImport`, `ListImportsByFile`, `ListImporterFiles`, `CreateIndexReference`, `ListReferencesBySymbol`, `CreateIndexPackage`, `GetIndexPackage`, `AddPackageDep`, `ListPackageDeps`
 
+**Convergence** (`convergence.go`):
+`CreateConvergencePair`, `GetConvergencePair`, `GetConvergencePairByImplTask`, `GetConvergencePairByTestTask`, `UpdateConvergencePairStatus`, `SetConvergenceTestTask`, `SetConvergenceFixTask`, `IncrementConvergenceIteration`, `ListConvergencePairsByRun`
+
 ### Sentinel Errors
 
 | Error | Meaning |
@@ -559,4 +598,7 @@ index_files 1──* index_imports
 index_files 1──* index_references
 index_symbols 0..1──* index_symbols (parent_symbol_id self-reference)
 index_packages *──* index_package_deps (self-referencing)
+tasks 1──0..1 convergence_pairs (impl_task_id)
+tasks 1──0..1 convergence_pairs (test_task_id)
+tasks 1──0..1 convergence_pairs (fix_task_id)
 ```

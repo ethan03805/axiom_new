@@ -12,6 +12,7 @@ import (
 	"github.com/openaxiom/axiom/internal/mergequeue"
 	"github.com/openaxiom/axiom/internal/scheduler"
 	"github.com/openaxiom/axiom/internal/state"
+	"github.com/openaxiom/axiom/internal/testgen"
 )
 
 // Options configures a new Engine instance.
@@ -45,6 +46,7 @@ type Engine struct {
 
 	sched      *scheduler.Scheduler
 	mergeQueue *mergequeue.Queue
+	testGen    *testgen.Service
 	workers    *WorkerPool
 
 	mu      sync.Mutex
@@ -83,13 +85,17 @@ func New(opts Options) (*Engine, error) {
 		models:    opts.Models,
 	}
 
+	// Create testgen service for test-generation separation (Section 11.5)
+	e.testGen = testgen.New(opts.DB, bus, opts.Log)
+
 	// Create scheduler with engine-provided adapters
 	e.sched = scheduler.New(scheduler.Options{
 		DB:               opts.DB,
 		Log:              opts.Log,
 		MaxMeeseeks:      opts.Config.Concurrency.MaxMeeseeks,
-		ModelSelector:    &engineModelSelector{models: opts.Models},
+		ModelSelector:    &engineModelSelector{models: opts.Models, log: opts.Log},
 		SnapshotProvider: &engineSnapshotProvider{git: opts.Git, rootDir: opts.RootDir},
+		FamilyExcluder:   &engineFamilyExcluder{testGen: e.testGen},
 	})
 
 	// Create merge queue with engine-provided adapters
@@ -167,6 +173,9 @@ func (e *Engine) Config() *config.Config { return e.cfg }
 
 // RootDir returns the project root directory.
 func (e *Engine) RootDir() string { return e.rootDir }
+
+// TestGen returns the engine's test-generation service.
+func (e *Engine) TestGen() *testgen.Service { return e.testGen }
 
 // emitEvent publishes an event to the bus. If persistence fails,
 // the error is logged but does not block the calling operation.

@@ -402,6 +402,19 @@ Per Architecture Section 14.2, failures at each stage trigger a retry cycle:
 
 The retry/escalation logic is handled by the task service (`internal/task/`) and scheduler (`internal/scheduler/`). The approval pipeline packages provide the results and feedback that drive those decisions.
 
+## Post-Merge: Test-Generation Separation (Phase 13)
+
+After an implementation task successfully merges, the test-generation system (Architecture Section 11.5) creates a separate test task from a different model family:
+
+1. `testgen.CreateTestTask(implTaskID)` creates a test-type task dependent on the implementation.
+2. The implementation's model family is recorded in a `convergence_pairs` record for exclusion.
+3. The scheduler dispatches the test task with `excludeFamily` set, ensuring a different model family.
+4. If tests fail, `testgen.HandleTestFailure()` creates an implementation-fix task with failure context.
+5. The fix task goes through the full approval pipeline (manifest → validation → review → merge).
+6. A feature is not considered done until `testgen.IsFeatureDone()` returns true (convergence achieved).
+
+See [Test-Generation Separation Reference](test-generation.md) for the full API.
+
 ---
 
 ## Attempt Phase Tracking

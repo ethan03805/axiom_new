@@ -448,6 +448,33 @@ type UIInputHistory struct {
 	CreatedAt time.Time
 }
 
+// --- Convergence types (Section 11.5) ---
+
+type ConvergenceStatus string
+
+const (
+	ConvergencePending   ConvergenceStatus = "pending"   // impl done, test task not yet created
+	ConvergenceTesting   ConvergenceStatus = "testing"   // test task created/in progress
+	ConvergenceFixing    ConvergenceStatus = "fixing"    // fix task in progress after test failure
+	ConvergenceConverged ConvergenceStatus = "converged" // impl + tests all green
+	ConvergenceBlocked   ConvergenceStatus = "blocked"   // exhausted retries in fix loop
+)
+
+// ConvergencePair links an implementation task to its test-generation and fix tasks.
+// Per Architecture Section 11.5: completion criteria require both the implementation
+// and its generated tests to converge (all tests green).
+type ConvergencePair struct {
+	ID              int64
+	ImplTaskID      string
+	TestTaskID      *string
+	FixTaskID       *string
+	Status          ConvergenceStatus
+	ImplModelFamily string
+	Iteration       int
+	CreatedAt       time.Time
+	ConvergedAt     *time.Time
+}
+
 // --- Semantic index types (Section 17.3) ---
 
 type SymbolKind string

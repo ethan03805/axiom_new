@@ -146,7 +146,7 @@ Lock acquisition uses the same atomic all-or-nothing approach as the scheduler (
 
 #### Interfaces
 
-The scheduler depends on two pluggable interfaces:
+The scheduler depends on three pluggable interfaces:
 
 ```go
 // ModelSelector picks a model for a given tier.
@@ -158,9 +158,16 @@ type ModelSelector interface {
 type SnapshotProvider interface {
     CurrentHEAD() (string, error)
 }
+
+// FamilyExcluder provides model family exclusion for test-generation separation.
+// Per Architecture Section 11.5: test tasks must use a different model family
+// than the implementation task that produced the code under test.
+type FamilyExcluder interface {
+    GetExcludeFamily(ctx context.Context, taskID string) (string, error)
+}
 ```
 
-The engine provides adapters that bridge `ModelService` and `GitService` to these interfaces.
+The engine provides adapters that bridge `ModelService`, `GitService`, and `testgen.Service` to these interfaces.
 
 #### Scheduler Creation
 
@@ -171,6 +178,7 @@ sched := scheduler.New(scheduler.Options{
     MaxMeeseeks:      cfg.Concurrency.MaxMeeseeks,
     ModelSelector:    modelSelector,
     SnapshotProvider: snapshotProvider,
+    FamilyExcluder:   familyExcluder, // optional, nil = no exclusion
 })
 ```
 
@@ -212,11 +220,12 @@ Lock scope hierarchy (from Section 16.3):
 
 When a task is dispatched:
 
-1. A model is selected for the task's tier via `ModelSelector`.
-2. The current HEAD SHA is captured via `SnapshotProvider` for base_snapshot pinning (Section 16.2).
-3. The attempt number is computed from existing attempts (previous count + 1).
-4. The task transitions `queued → in_progress`.
-5. A new `task_attempts` record is created with `status = running`, `phase = executing`, and the task's current tier.
+1. If a `FamilyExcluder` is configured, the scheduler queries it for the task's exclude family. For test-type tasks linked to a convergence pair, this returns the implementation task's model family. For all other tasks, this returns empty string.
+2. A model is selected for the task's tier via `ModelSelector`, passing the exclude family. When `excludeFamily` is non-empty, the model selector picks a model from a different family (per Architecture Section 11.5).
+3. The current HEAD SHA is captured via `SnapshotProvider` for base_snapshot pinning (Section 16.2).
+4. The attempt number is computed from existing attempts (previous count + 1).
+5. The task transitions `queued → in_progress`.
+6. A new `task_attempts` record is created with `status = running`, `phase = executing`, and the task's current tier.
 
 ### Lock Release and Waiter Processing
 
@@ -244,10 +253,11 @@ The scheduler is wired into the engine in `internal/engine/scheduler.go`:
 e.workers.Register("scheduler", e.schedulerLoop, 500*time.Millisecond)
 ```
 
-Two adapter types bridge engine services to scheduler interfaces:
+Three adapter types bridge engine services to scheduler interfaces:
 
-- `engineModelSelector` — wraps `ModelService.List()` to select the first available model at the requested tier.
+- `engineModelSelector` — wraps `ModelService.List()` to select the first available model at the requested tier. When `excludeFamily` is non-empty (test-generation separation per Section 11.5), iterates available models and returns the first from a different family. Logs a warning if all models at the tier are from the excluded family.
 - `engineSnapshotProvider` — wraps `GitService.CurrentHEAD()` with the project root directory.
+- `engineFamilyExcluder` — wraps `testgen.Service.GetExcludeFamily()` to look up the implementation model family for test-type tasks via convergence pairs.
 
 ## Database Changes
 
@@ -313,7 +323,7 @@ queued → in_progress → done
 | `TestRequestScopeExpansion_AddsLockWait` | Conflict → waiting_on_lock with lock wait record |
 | `TestRequestScopeExpansion_GrantedWhenUnlocked` | No conflict → locks acquired, stays in_progress |
 | `TestCountAttemptsAtCurrentTier` | Per-tier attempt counting accuracy |
-| **Scheduler (15 tests)** | |
+| **Scheduler (18 tests)** | |
 | `TestTick_DispatchesReadyTask` | Queued task with no deps → in_progress + attempt |
 | `TestTick_SkipsTasksWithUnfinishedDeps` | Task with pending dep stays queued |
 | `TestTick_DispatchesTaskWhenDepsAreDone` | Task dispatched when all deps done |
@@ -329,6 +339,9 @@ queued → in_progress → done
 | `TestTick_NoActiveRuns` | No-op when no active runs exist |
 | `TestTick_PausedRunSkipped` | Paused runs are not processed |
 | `TestTick_CorrectAttemptNumber` | Attempt number increments correctly |
+| `TestTick_TestTaskUsesExcludeFamily` | Test-type tasks pass impl model family as excludeFamily |
+| `TestTick_ImplTaskUsesEmptyExcludeFamily` | Implementation tasks pass empty excludeFamily |
+| `TestTick_NilFamilyExcluder` | Backward compatible — nil excluder passes empty |
 
 ## API Reference
 

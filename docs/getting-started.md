@@ -186,12 +186,26 @@ Only one merge is processed at a time, preventing concurrent commit conflicts.
 
 See [Approval Pipeline Reference](approval-pipeline.md) for implementation details.
 
+## Test-Generation Separation
+
+After an implementation task merges, Axiom creates a separate test-generation task from a **different model family** (Architecture Section 11.5). This prevents circular validation — tests are not meaningful if the same model wrote both the code and the tests.
+
+The lifecycle:
+1. Implementation merges successfully via the merge queue.
+2. A test-generation task is created, dependent on the implementation, with the implementation's model family excluded.
+3. The test task is dispatched to a different model family (e.g., if implementation used Claude, tests use GPT).
+4. If tests pass, the feature is marked as converged (done).
+5. If tests fail, an implementation-fix task is created with the failing test output as context, and the fix goes through the full approval pipeline.
+
+A feature is not considered complete until both the implementation and its generated tests converge. This is tracked via convergence pairs in the database.
+
+See [Test-Generation Separation Reference](test-generation.md) for implementation details.
+
 ## What's Next
 
 The following features are implemented in later phases:
 
 - `axiom run "<prompt>"` — CLI command to start a run (Phase 14; engine SRS flow available since Phase 9)
-- Test-generation separation and convergence logic (Phase 13)
 - `axiom tui` — interactive terminal UI (Phase 15)
 - `axiom api start` — external orchestration API (Phase 16)
 - `axiom doctor` — system health checks (Phase 19)

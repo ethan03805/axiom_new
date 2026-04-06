@@ -40,6 +40,11 @@ const (
 	BudgetWarning  EventType = "budget_warning"
 	BudgetExceeded EventType = "budget_exceeded"
 
+	TestGenCreated    EventType = "testgen_created"
+	TestGenConverged  EventType = "testgen_converged"
+	TestGenFixCreated EventType = "testgen_fix_created"
+	TestGenBlocked    EventType = "testgen_blocked"
+
 	SRSSubmitted EventType = "srs_submitted"
 	SRSApproved  EventType = "srs_approved"
 	SRSRejected  EventType = "srs_rejected"

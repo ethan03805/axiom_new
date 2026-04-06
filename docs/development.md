@@ -36,7 +36,8 @@ axiom/
 │   │   ├── eco.go          # ECO log + status transitions
 │   │   ├── containers.go   # Container session tracking
 │   │   ├── model_registry.go # Model registry CRUD (Phase 7)
-│   │   └── index.go        # Semantic index CRUD (Phase 8)
+│   │   ├── index.go        # Semantic index CRUD (Phase 8)
+│   │   └── convergence.go  # Convergence pair CRUD (Phase 13)
 │   ├── version/            # Build-time version injection
 │   │
 │   ├── gitops/             # Git operations manager (Phase 4)
@@ -104,6 +105,9 @@ axiom/
 │   │
 │   ├── mergequeue/         # Serialized merge queue (Phase 12)
 │   │   └── mergequeue.go   # Queue, MergeItem, Tick, Enqueue, conflict detection, file apply/revert, commit
+│   │
+│   ├── testgen/            # Test-generation separation and convergence logic (Phase 13)
+│   │   └── testgen.go      # Service, CreateTestTask, GetExcludeFamily, HandleTestFailure, CheckConvergence, MarkConverged, MarkBlocked, IsFeatureDone
 │   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
@@ -191,6 +195,7 @@ The database is built through sequential migrations:
 - `003_model_registry.sql` — adds `model_registry` table for model catalog with tier, family, and source indexes (Phase 7)
 - `004_semantic_index.sql` — adds 6 semantic index tables (`index_files`, `index_symbols`, `index_imports`, `index_references`, `index_packages`, `index_package_deps`) with 11 performance indexes (Phase 8)
 - `005_attempt_tier.sql` — adds `tier` column to `task_attempts` for per-tier retry counting (Phase 10)
+- `006_convergence_pairs.sql` — adds `convergence_pairs` table for test-generation separation and convergence tracking (Phase 13)
 
 All tables have corresponding repository methods in the `state` package (see [Database Schema Reference](database-schema.md) for the full repository API):
 
@@ -313,7 +318,37 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 10 | Task System, Scheduler, and Locking | Complete |
 | 11 | Manifest Validation, Validation Sandbox, Review Pipeline | Complete |
 | 12 | Merge Queue and Integration Checks | Complete |
-| 13-20 | Remaining phases | Not started |
+| 13 | Test-Generation Separation and Convergence Logic | Complete |
+| 14-20 | Remaining phases | Not started |
+
+### Phase 13 Summary
+
+Phase 13 enforced architecture-mandated independence between implementation and test authorship per Architecture Section 11.5:
+
+- **Test-generation service** (`testgen/testgen.go`) — `Service` struct with `CreateTestTask` (creates a test-generation task after implementation merge succeeds, validates impl is done, records implementation model family for exclusion, creates task + dependency + convergence pair in a single atomic transaction), `GetExcludeFamily` (returns the implementation's model family for a given test task, used by the scheduler to enforce family separation), `HandleTestFailure` (creates an implementation-fix task when generated tests fail — includes committed code reference, failing test task reference, and failure output in the fix task description; atomically creates the fix task, dependency, and updates the convergence pair status/iteration), `CheckConvergence` (returns the current convergence status for an implementation task), `MarkConverged` (marks a convergence pair as converged after test task completes successfully; validates test task is done), `MarkBlocked` (marks a convergence pair as blocked after exhausting retries in the fix loop), `IsFeatureDone` (returns true only when convergence pair status is `converged`).
+
+- **Convergence tracking** (`state/convergence.go`, `migrations/006_convergence_pairs.sql`) — New `convergence_pairs` table linking implementation tasks to their test-generation and fix tasks with status lifecycle: `pending → testing → fixing → converged` (or `blocked`). Fields: `impl_task_id`, `test_task_id`, `fix_task_id`, `status`, `impl_model_family`, `iteration` (incremented on each fix cycle), `converged_at`. Indexes on `impl_task_id`, `test_task_id`, and `status`. State layer CRUD: `CreateConvergencePair`, `GetConvergencePair`, `GetConvergencePairByImplTask`, `GetConvergencePairByTestTask`, `UpdateConvergencePairStatus`, `SetConvergenceTestTask`, `SetConvergenceFixTask`, `IncrementConvergenceIteration`, `ListConvergencePairsByRun`.
+
+- **Model family exclusion in scheduler** (`scheduler/scheduler.go`) — New `FamilyExcluder` interface with `GetExcludeFamily(ctx, taskID)` method. The scheduler's `dispatch()` method calls the excluder before model selection. For test-type tasks, the implementation's model family is passed as `excludeFamily` to `ModelSelector.SelectModel()`, ensuring a different model family is selected. When no `FamilyExcluder` is configured (backward compatible), the scheduler passes empty `excludeFamily` as before.
+
+- **Engine model selector update** (`engine/scheduler.go`) — `engineModelSelector.SelectModel` now uses the `excludeFamily` parameter (previously ignored as `_ string`). When `excludeFamily` is set, it iterates available models at the requested tier and returns the first model from a different family. If all models at the tier are from the excluded family, a warning is logged (Section 11.5 violation) and falls back to the first available model.
+
+- **Engine integration** (`engine/engine.go`, `engine/scheduler.go`) — `testgen.Service` created in `Engine.New()` and wired to the scheduler via `engineFamilyExcluder` adapter. `Engine.TestGen()` accessor exposes the service. The testgen service receives the event bus for lifecycle event emission.
+
+- **Event types** (`events/types.go`) — Four new authoritative events: `testgen_created` (test task created for implementation), `testgen_converged` (implementation + tests all green), `testgen_fix_created` (fix task spawned after test failure), `testgen_blocked` (convergence exhausted retries). Events emitted in `CreateTestTask`, `HandleTestFailure`, `MarkConverged`, and `MarkBlocked`.
+
+- **Atomicity** — Both `CreateTestTask` and `HandleTestFailure` execute all database mutations (task creation, dependency insertion, convergence pair creation/update) within a single `WithTx` transaction. If any step fails, the entire operation rolls back — no orphaned tasks or inconsistent convergence state.
+
+- **Test coverage** — 27 new tests across two files:
+  - `testgen/testgen_test.go` (24 tests) — CreateTestTask (5 tests: success, convergence pair creation, rejects non-done impl, rejects non-impl type, rejects impl without successful attempt, rejects duplicate), GetExcludeFamily (2 tests: returns impl family, returns empty for non-test), HandleTestFailure (4 tests: creates fix task, updates convergence pair, rejects non-failed test, rejects non-test type), CheckConvergence (4 tests: pending/testing/fixing/no-pair), MarkConverged (2 tests: success, rejects when test not done), IsFeatureDone (3 tests: true when converged, false when testing, false when no pair), MarkBlocked (1 test), model family parameterized (4 sub-tests: anthropic/openai/google/meta), fix task description content (1 test).
+  - `scheduler/testgen_test.go` (3 tests) — test task uses exclude family, impl task uses empty exclude family, nil FamilyExcluder backward compatibility.
+
+- **Known deferred items:**
+  - Automatic test task creation triggered by merge queue success events (currently `CreateTestTask` must be called explicitly by the orchestrator — Phase 16+)
+  - Automatic convergence detection when test tasks complete (currently `MarkConverged` must be called explicitly)
+  - Context packaging of committed implementation + semantic index for test-generation TaskSpecs (the convergence pair tracks the data; TaskSpec construction is orchestrator responsibility)
+
+See [Test-Generation Separation Reference](test-generation.md) for the full API.
 
 ### Phase 12 Summary
 
@@ -388,7 +423,7 @@ Phase 10 implemented the task system, execution scheduler, and write-set locking
 
 - **Dispatch** — Selects a model via `ModelSelector` interface, captures current HEAD via `SnapshotProvider` for base_snapshot pinning (Section 16.2), computes attempt number, transitions `queued → in_progress`, creates `task_attempts` record with `status = running`, `phase = executing`, and the task's current tier.
 
-- **Engine integration** (`engine/scheduler.go`) — Scheduler registered as a 500ms background worker. `engineModelSelector` adapts `ModelService.List()` to `scheduler.ModelSelector`. `engineSnapshotProvider` adapts `GitService.CurrentHEAD()` to `scheduler.SnapshotProvider`.
+- **Engine integration** (`engine/scheduler.go`) — Scheduler registered as a 500ms background worker. `engineModelSelector` adapts `ModelService.List()` to `scheduler.ModelSelector` (with `excludeFamily` support for test-generation separation per Section 11.5). `engineSnapshotProvider` adapts `GitService.CurrentHEAD()` to `scheduler.SnapshotProvider`. `engineFamilyExcluder` adapts `testgen.Service.GetExcludeFamily()` to `scheduler.FamilyExcluder`.
 
 - **Schema evolution** (`migrations/005_attempt_tier.sql`) — Adds `tier TEXT NOT NULL DEFAULT 'standard'` column to `task_attempts` for per-tier retry counting.
 
