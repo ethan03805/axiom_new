@@ -21,6 +21,7 @@ type Options struct {
 	Container ContainerService
 	Inference InferenceService
 	Index     IndexService
+	Models    ModelService
 }
 
 // Engine is the long-lived trusted control plane runtime.
@@ -37,6 +38,7 @@ type Engine struct {
 	container ContainerService
 	inference InferenceService
 	index     IndexService
+	models    ModelService
 
 	workers *WorkerPool
 
@@ -73,6 +75,7 @@ func New(opts Options) (*Engine, error) {
 		container: opts.Container,
 		inference: opts.Inference,
 		index:     opts.Index,
+		models:    opts.Models,
 	}, nil
 }
 

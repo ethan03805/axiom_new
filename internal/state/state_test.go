@@ -33,6 +33,7 @@ func TestOpenAndMigrate(t *testing.T) {
 		"task_locks", "task_lock_waits", "task_dependencies",
 		"task_target_files", "task_srs_refs",
 		"ui_sessions", "ui_messages", "ui_session_summaries", "ui_input_history",
+		"model_registry",
 	}
 	for _, table := range tables {
 		var count int

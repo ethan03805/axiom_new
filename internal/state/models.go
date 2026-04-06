@@ -469,6 +469,29 @@ func (d *DB) WithTx(fn func(tx *sql.Tx) error) error {
 	return sqlTx.Commit()
 }
 
+// --- Model registry (Section 18.3) ---
+
+type ModelRegistryEntry struct {
+	ID                    string
+	Family                string
+	Source                string // openrouter, bitnet, shipped
+	Tier                  TaskTier
+	ContextWindow         int
+	MaxOutput             int
+	PromptPerMillion      float64
+	CompletionPerMillion  float64
+	Strengths             []string
+	Weaknesses            []string
+	SupportsTools         bool
+	SupportsVision        bool
+	SupportsGrammar       bool
+	RecommendedFor        []string
+	NotRecommendedFor     []string
+	HistoricalSuccessRate *float64
+	AvgCostPerTask        *float64
+	LastUpdated           time.Time
+}
+
 // --- Time scan helpers ---
 
 // sqliteTimeFormats lists the timestamp formats SQLite/modernc may return.

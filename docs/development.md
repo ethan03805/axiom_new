@@ -11,7 +11,7 @@ axiom/
 │   ├── app/                # Composition root (wires config, state, engine)
 │   ├── config/             # TOML config loading, validation, layering
 │   ├── engine/             # Trusted engine runtime (Phase 3)
-│   │   ├── interfaces.go   # Service interfaces (GitService, ContainerService, InferenceService, IndexService)
+│   │   ├── interfaces.go   # Service interfaces (GitService, ContainerService, InferenceService, IndexService, ModelService)
 │   │   ├── engine.go       # Engine struct, constructor, Start/Stop lifecycle, emitEvent helper
 │   │   ├── run.go          # Run lifecycle (CreateRun, PauseRun, ResumeRun, CancelRun, CompleteRun, FailRun)
 │   │   ├── status.go       # Status projections (RunStatusProjection, TaskSummary, BudgetSummary)
@@ -52,10 +52,20 @@ axiom/
 │   │   ├── budget.go       # Budget pre-authorization (goroutine-safe)
 │   │   └── ratelimit.go    # Per-task rate limiting
 │   │
+│   ├── models/             # Model registry service (Phase 7)
+│   │   ├── models.json     # Shipped capability index (31 models, embedded)
+│   │   ├── shipped.go      # Embedded models.json loader
+│   │   ├── openrouter.go   # OpenRouter /api/v1/models fetcher + pricing classification
+│   │   ├── bitnet_models.go # BitNet /v1/models fetcher + Falcon model normalization
+│   │   ├── registry.go     # Registry service: refresh, list, get, broker map extraction
+│   │   └── engine_adapter.go # RegistryAdapter → engine.ModelService bridge
+│   │
+│   ├── bitnet/             # Local BitNet server lifecycle (Phase 7)
+│   │   └── service.go      # Service: Status, ListModels, Start, Stop, Enabled, WeightDir
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
-│   ├── bitnet/             # Local BitNet server lifecycle commands
 │   ├── budget/             # (Budget logic is in inference/budget.go)
 │   ├── cli/                # CLI command helpers
 │   ├── doctor/             # System health checks
@@ -63,7 +73,6 @@ axiom/
 │   ├── index/              # Semantic indexer (tree-sitter)
 │   ├── manifest/           # Output manifest parsing and validation
 │   ├── mergequeue/         # Serialized merge queue
-│   ├── models/             # Model registry
 │   ├── orchestrator/       # Orchestrator lifecycle management
 │   ├── review/             # Review pipeline
 │   ├── scheduler/          # Task scheduler and lock manager
@@ -146,6 +155,7 @@ To add a new migration:
 The database is built through sequential migrations:
 - `001_initial_schema.sql` — creates 20 tables matching Architecture Section 15.2
 - `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` for independent container lifecycle management (Phase 5)
+- `003_model_registry.sql` — adds `model_registry` table for model catalog with tier, family, and source indexes (Phase 7)
 
 All tables have corresponding repository methods in the `state` package (see [Database Schema Reference](database-schema.md) for the full repository API):
 
@@ -171,6 +181,7 @@ All tables have corresponding repository methods in the `state` package (see [Da
 | `events` | Full audit trail |
 | `cost_log` | Inference cost tracking |
 | `eco_log` | Engineering Change Orders |
+| `model_registry` | Aggregated model catalog (Phase 7) |
 
 ## Testing
 
@@ -195,7 +206,7 @@ Current test coverage by package:
 |---------|-------|----------|
 | `internal/version` | 2 | Version string formatting |
 | `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
-| `internal/state` | 69 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5) |
+| `internal/state` | 82 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5), model registry (13) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
 | `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
 | `internal/engine` | 28 | Engine lifecycle (8), run lifecycle (8), status projections (5), worker pool (5), service interface wiring (2) |
@@ -203,6 +214,8 @@ Current test coverage by package:
 | `internal/ipc` | 24 | Message types (6), envelope serialization (4), directory management (6), spec writers (5), message read/write (3) |
 | `internal/container` | 17 | Container naming (2), hardening flags (7), start/stop lifecycle (4), list/cleanup (3), interface compliance (1) |
 | `internal/inference` | 51 | Budget enforcer (11), rate limiter (6), OpenRouter provider (11), BitNet provider (7), broker integration (16) |
+| `internal/models` | 19 | Shipped loader (3), OpenRouter fetcher (2), BitNet scanner (2), registry service (7), merge enrichment (1), combined filtering (1), broker maps (1), performance preservation (1), adapter (1) |
+| `internal/bitnet` | 11 | Service creation (1), status up/down (2), model listing (2), enabled/disabled (1), base URL (1), start/stop guards (2), weight dir (1), status fields (1) |
 
 ### Test Patterns
 
@@ -213,6 +226,8 @@ Current test coverage by package:
 - Container tests use a `mockExecutor` that records Docker commands instead of running them
 - IPC tests verify filesystem operations against real temp directories
 - Inference tests use `httptest.NewServer` for mock provider endpoints and `mockProvider` for broker integration
+- Model registry tests use `httptest.NewServer` for mock OpenRouter and BitNet API endpoints
+- BitNet service tests use `httptest.NewServer` with a test URL override for mock health and model endpoints
 - No external service dependencies in current tests (Docker, network, inference are all mocked)
 
 ## Architecture Constraints
@@ -241,7 +256,44 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 4 | Git Operations and Workspace Safety | Complete |
 | 5 | IPC, Container Lifecycle, and Sandbox Images | Complete |
 | 6 | Inference Broker, Provider Routing, and Cost Enforcement | Complete |
-| 7-20 | Remaining phases | Not started |
+| 7 | Model Registry and BitNet Operations | Complete |
+| 8-20 | Remaining phases | Not started |
+
+### Phase 7 Summary
+
+Phase 7 implemented the model registry and BitNet server lifecycle per Architecture Sections 18 and 19:
+
+- **Model registry table** (`migrations/003_model_registry.sql`) — SQLite table with all 18 fields from Section 18.3: id, family, source, tier, context/output windows, pricing, capability tags (strengths/weaknesses/recommended_for/not_recommended_for), feature flags (tools/vision/grammar), historical performance metrics, and last_updated timestamp. Indexed on tier, family, and source.
+
+- **State layer CRUD** (`state/model_registry.go`) — 10 repository methods: `UpsertModel` (INSERT OR REPLACE preserving performance history via COALESCE), `GetModel`, `ListModels` (ordered by tier then ID), `ListModelsByTier`, `ListModelsByFamily`, `ListModelsByTierAndFamily` (combined filter), `DeleteModel`, `DeleteModelsBySource`, `ModelCountByTier`, and `UpdateModelPerformance`. JSON array encoding/decoding helpers for string slice columns.
+
+- **Shipped capability index** (`models/models.json`) — 31 curated models embedded via `embed.FS`:
+  - **Premium (8):** Claude Opus 4.6, GPT-5.4, GPT-5.4 Pro, Gemini 3.1 Pro Preview, Grok 4.20, Grok 4, o3-pro, MiMo-V2-Pro
+  - **Standard (12):** Claude Sonnet 4.6, GPT-5.3 Codex, o3, Kimi K2.5, Gemini 2.5 Pro, Devstral 2, Mistral Large, DeepSeek V3.2, Qwen3-Coder-Plus, Qwen3-Coder-Next, Llama 4 Maverick, Trinity Large Thinking
+  - **Cheap (10):** GPT-5.4 Mini, Claude Haiku 4.5, GPT-5.4 Nano, Gemini 2.5 Flash, Gemini 2.5 Flash Lite, o4-mini, Devstral Small, MiMo-V2 Flash, DeepSeek R1-0528
+  - **Local (4):** Falcon3-1B/3B/7B/10B Instruct (1.58-bit, zero cost, GBNF grammar support)
+
+- **OpenRouter fetcher** (`models/openrouter.go`) — Fetches model list from OpenRouter `/api/v1/models`, parses per-token pricing, auto-classifies tiers by price thresholds, extracts family from model ID, and merges capability data from shipped models when IDs match.
+
+- **BitNet scanner** (`models/bitnet_models.go`) — Fetches loaded models from BitNet server `/v1/models`, normalizes Falcon model names to `bitnet/<name>` format, estimates context windows by model size, and marks all as local tier with grammar support.
+
+- **Registry service** (`models/registry.go`) — `RefreshShipped`, `RefreshOpenRouter`, and `RefreshBitNet` methods that independently load their sources into the SQLite registry. `RefreshOpenRouter` enriches fetched models with shipped capability data (strengths, weaknesses, tools, vision, grammar, tier override). `List` supports filtering by tier, family, or both. `BrokerMaps()` extracts `ModelPricing` and tier maps for the inference broker.
+
+- **Engine adapter** (`models/engine_adapter.go`) — `RegistryAdapter` bridges `Registry` to `engine.ModelService` interface with compile-time assertion. Converts `state.ModelRegistryEntry` to `engine.ModelInfo` including performance history fields.
+
+- **BitNet service** (`bitnet/service.go`) — Server lifecycle management: `Status` (health check via `/health` + model count), `ListModels` (query `/v1/models`), `Start`/`Stop` (manual-mode stubs for initial release), `Enabled` (config-driven), `BaseURL` (constructed from config), `WeightDir` (resolves `~/.axiom/bitnet/models/`). Sentinel errors: `ErrDisabled`, `ErrNotRunning`, `ErrNoWeights`.
+
+- **Engine integration** — `ModelService` interface added to `engine/interfaces.go` with `RefreshShipped`, `RefreshOpenRouter`, `RefreshBitNet`, `List`, and `Get` methods. `ModelInfo` struct includes all registry fields plus performance history. `Models` field added to `Engine.Options` and wired in `Engine` constructor.
+
+- **App wiring** (`app/app.go`) — `Open()` now creates a `models.Registry`, loads shipped models at startup, creates a `bitnet.Service`, and passes a `RegistryAdapter` as the engine's `ModelService`. Both `Registry` and `BitNet` service are exposed on the `App` struct for CLI access.
+
+- **Known deferred items:**
+  - Full BitNet process management (spawning `bitnet.cpp`) — currently requires manual server start
+  - First-run weight download with confirmation prompt (Architecture Section 19.9)
+  - CLI command wiring for `axiom models` and `axiom bitnet` commands (Phase 14)
+  - Dynamic model pricing refresh from OpenRouter on broker construction (currently static at startup)
+
+See [Model Registry Reference](model-registry.md) for the full API.
 
 ### Phase 6 Summary
 

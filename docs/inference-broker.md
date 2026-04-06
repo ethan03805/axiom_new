@@ -302,4 +302,4 @@ Total: **51 tests**. All use mock HTTP servers (`httptest.NewServer`) or mock pr
 
 - **Streaming via chunked IPC output files** — The `Stream` field exists in `ProviderRequest` but is hardcoded to `false`. Streaming requires the IPC chunk writer and integrates with Phase 10 (task execution).
 - **Queue-until-connectivity for non-local tasks** — When the cloud provider is down, non-local tasks receive `ErrProviderDown` immediately. The queue-and-retry behavior belongs in the Phase 10 scheduler.
-- **Dynamic model pricing** — Currently passed as a static map at broker construction. Phase 7 (Model Registry) will load and refresh pricing from OpenRouter's model API.
+- **Dynamic model pricing at runtime** — Phase 7 added the Model Registry which loads and refreshes pricing from OpenRouter's model API. The `Registry.BrokerMaps()` method extracts `ModelPricing` and tier maps suitable for broker construction. However, the broker still receives these maps statically at construction time. Hot-reloading pricing without restarting the broker is deferred.

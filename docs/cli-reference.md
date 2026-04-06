@@ -134,21 +134,22 @@ These commands are defined in the architecture and will be implemented in later 
 | `axiom session resume <id>` | 15 | Resume a session |
 | `axiom session export <id>` | 15 | Export session transcript |
 
-### Model Commands
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `axiom models refresh` | 7 | Update model registry |
-| `axiom models list` | 7 | List all models |
-| `axiom models list --tier <tier>` | 7 | Filter by tier |
-| `axiom models info <model-id>` | 7 | Show model details |
+### Model Commands (service layer ready — Phase 7; CLI wiring in Phase 14)
+| Command | Service Status | Description |
+|---------|---------------|-------------|
+| `axiom models refresh` | `Registry.RefreshShipped/OpenRouter/BitNet` | Update model registry from all sources |
+| `axiom models list` | `Registry.List("", "")` | List all models (31 shipped) |
+| `axiom models list --tier <tier>` | `Registry.List(tier, "")` | Filter by tier (local, cheap, standard, premium) |
+| `axiom models list --family <family>` | `Registry.List("", family)` | Filter by model family |
+| `axiom models info <model-id>` | `Registry.Get(id)` | Show detailed model info |
 
-### BitNet Commands
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `axiom bitnet start` | 7 | Start local inference |
-| `axiom bitnet stop` | 7 | Stop local inference |
-| `axiom bitnet status` | 7 | Show server status |
-| `axiom bitnet models` | 7 | List local models |
+### BitNet Commands (service layer ready — Phase 7; CLI wiring in Phase 14)
+| Command | Service Status | Description |
+|---------|---------------|-------------|
+| `axiom bitnet start` | `Service.Start` (manual-mode stub) | Start local inference server |
+| `axiom bitnet stop` | `Service.Stop` (manual-mode stub) | Stop local inference server |
+| `axiom bitnet status` | `Service.Status` | Show server status + loaded model count |
+| `axiom bitnet models` | `Service.ListModels` | List models loaded in BitNet server |
 
 ### API & Tunnel Commands
 | Command | Phase | Description |

@@ -25,6 +25,7 @@ CREATE TABLE schema_migrations (
 Current migrations:
 - `001_initial_schema.sql` — full schema from Architecture Section 15.2
 - `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` (Phase 5)
+- `003_model_registry.sql` — adds `model_registry` table for model catalog (Phase 7)
 
 ## Table Reference
 
@@ -319,6 +320,32 @@ Per-project CLI input history.
 | `content` | TEXT | NOT NULL |
 | `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
+### Model Registry (Phase 7)
+
+#### `model_registry`
+Aggregated model catalog from OpenRouter, BitNet, and shipped capability data. Per Architecture Section 18.3.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | TEXT | PRIMARY KEY | Model ID (e.g., "anthropic/claude-opus-4.6") |
+| `family` | TEXT | NOT NULL | Provider family (e.g., "anthropic", "openai", "falcon") |
+| `source` | TEXT | NOT NULL, CHECK | openrouter, bitnet, or shipped |
+| `tier` | TEXT | NOT NULL, CHECK | local, cheap, standard, premium |
+| `context_window` | INTEGER | NOT NULL DEFAULT 0 | Maximum context tokens |
+| `max_output` | INTEGER | NOT NULL DEFAULT 0 | Maximum output tokens |
+| `prompt_per_million` | REAL | NOT NULL DEFAULT 0 | USD per million prompt tokens |
+| `completion_per_million` | REAL | NOT NULL DEFAULT 0 | USD per million completion tokens |
+| `strengths` | TEXT | | JSON array of capability tags |
+| `weaknesses` | TEXT | | JSON array of limitation tags |
+| `supports_tools` | INTEGER | NOT NULL DEFAULT 0 | Boolean: supports tool calling |
+| `supports_vision` | INTEGER | NOT NULL DEFAULT 0 | Boolean: supports image input |
+| `supports_grammar` | INTEGER | NOT NULL DEFAULT 0 | Boolean: supports GBNF grammar constraints |
+| `recommended_for` | TEXT | | JSON array of recommended task types |
+| `not_recommended_for` | TEXT | | JSON array of not-recommended task types |
+| `historical_success_rate` | REAL | | 0.0-1.0, updated after project completion |
+| `avg_cost_per_task` | REAL | | Average cost in USD |
+| `last_updated` | DATETIME | NOT NULL DEFAULT CURRENT_TIMESTAMP | Last refresh time |
+
 ## Indexes
 
 ```sql
@@ -333,6 +360,9 @@ CREATE INDEX idx_events_type ON events(event_type);
 CREATE INDEX idx_cost_log_run ON cost_log(run_id);
 CREATE INDEX idx_ui_sessions_project ON ui_sessions(project_id);
 CREATE INDEX idx_ui_messages_session ON ui_messages(session_id);
+CREATE INDEX idx_model_registry_tier ON model_registry(tier);
+CREATE INDEX idx_model_registry_family ON model_registry(family);
+CREATE INDEX idx_model_registry_source ON model_registry(source);
 ```
 
 ## Repository API
@@ -407,6 +437,9 @@ failed → queued   (retry or escalation per Section 15.4)
 **Containers** (`containers.go`):
 `CreateContainerSession`, `GetContainerSession`, `ListActiveContainers`, `ListContainersByRun`, `MarkContainerStopped`
 
+**Model Registry** (`model_registry.go`):
+`UpsertModel`, `GetModel`, `ListModels`, `ListModelsByTier`, `ListModelsByFamily`, `ListModelsByTierAndFamily`, `DeleteModel`, `DeleteModelsBySource`, `ModelCountByTier`, `UpdateModelPerformance`
+
 ### Sentinel Errors
 
 | Error | Meaning |
@@ -436,4 +469,5 @@ projects 1──* ui_sessions
 ui_sessions 1──* ui_messages
 ui_sessions 1──* ui_session_summaries
 projects 1──* ui_input_history
+model_registry            (standalone — no FK relationships)
 ```

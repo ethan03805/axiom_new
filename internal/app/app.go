@@ -5,8 +5,10 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/openaxiom/axiom/internal/bitnet"
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/engine"
+	"github.com/openaxiom/axiom/internal/models"
 	"github.com/openaxiom/axiom/internal/project"
 	"github.com/openaxiom/axiom/internal/state"
 )
@@ -17,6 +19,8 @@ type App struct {
 	Config      *config.Config
 	DB          *state.DB
 	Engine      *engine.Engine
+	Registry    *models.Registry
+	BitNet      *bitnet.Service
 	ProjectRoot string
 	Log         *slog.Logger
 }
@@ -54,11 +58,21 @@ func Open(log *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
+	// Phase 7: Create model registry and load shipped models.
+	registry := models.NewRegistry(db, log)
+	if err := registry.RefreshShipped(); err != nil {
+		log.Warn("failed to load shipped models", "error", err)
+	}
+
+	// Phase 7: Create BitNet service manager.
+	bitnetSvc := bitnet.NewService(cfg)
+
 	eng, err := engine.New(engine.Options{
 		Config:  cfg,
 		DB:      db,
 		RootDir: root,
 		Log:     log,
+		Models:  models.NewRegistryAdapter(registry),
 	})
 	if err != nil {
 		db.Close()
@@ -69,6 +83,8 @@ func Open(log *slog.Logger) (*App, error) {
 		Config:      cfg,
 		DB:          db,
 		Engine:      eng,
+		Registry:    registry,
+		BitNet:      bitnetSvc,
 		ProjectRoot: root,
 		Log:         log,
 	}, nil

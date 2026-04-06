@@ -75,3 +75,35 @@ type InferenceService interface {
 type IndexService interface {
 	Index(ctx context.Context, dir string) error
 }
+
+// ModelService abstracts model registry operations for testability.
+// Per Architecture Section 18, the registry feeds the broker's model allowlist.
+type ModelService interface {
+	RefreshShipped() error
+	RefreshOpenRouter(ctx context.Context, baseURL string) error
+	RefreshBitNet(ctx context.Context, baseURL string) error
+	List(tier, family string) ([]ModelInfo, error)
+	Get(id string) (*ModelInfo, error)
+}
+
+// ModelInfo is the engine-level view of a registered model.
+type ModelInfo struct {
+	ID                    string
+	Family                string
+	Source                string
+	Tier                  string
+	ContextWindow         int
+	MaxOutput             int
+	PromptPerMillion      float64
+	CompletionPerMillion  float64
+	Strengths             []string
+	Weaknesses            []string
+	SupportsTools         bool
+	SupportsVision        bool
+	SupportsGrammar       bool
+	RecommendedFor        []string
+	NotRecommendedFor     []string
+	HistoricalSuccessRate *float64
+	AvgCostPerTask        *float64
+	LastUpdated           string
+}
