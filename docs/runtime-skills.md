@@ -133,3 +133,4 @@ Treat generated files as managed outputs. If you need to refresh them, rerun the
 - [Configuration Reference](configuration.md)
 - [API Server](api-server.md)
 - [Getting Started](getting-started.md)
+- [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md)

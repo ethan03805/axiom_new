@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/engine"
 	"github.com/openaxiom/axiom/internal/events"
+	"github.com/openaxiom/axiom/internal/security"
 	"github.com/openaxiom/axiom/internal/state"
 )
 
@@ -41,16 +43,17 @@ type BrokerConfig struct {
 // Containers submit requests via IPC; the broker validates, routes, executes,
 // and logs every request.
 type Broker struct {
-	cfg           *config.Config
-	db            *state.DB
-	bus           *events.Bus
-	log           *slog.Logger
-	cloud         Provider
-	local         Provider
-	modelPricing  map[string]ModelPricing
-	modelTiers    map[string]string
-	budget        *BudgetEnforcer
-	rateLimiter   *RateLimiter
+	cfg          *config.Config
+	db           *state.DB
+	bus          *events.Bus
+	log          *slog.Logger
+	cloud        Provider
+	local        Provider
+	modelPricing map[string]ModelPricing
+	modelTiers   map[string]string
+	budget       *BudgetEnforcer
+	rateLimiter  *RateLimiter
+	security     *security.Policy
 }
 
 // NewBroker creates a Broker from its configuration and dependencies.
@@ -66,6 +69,7 @@ func NewBroker(bc BrokerConfig) *Broker {
 		modelTiers:   bc.ModelTiers,
 		budget:       NewBudgetEnforcer(bc.Config.Budget.MaxUSD, bc.Config.Budget.WarnAtPercent),
 		rateLimiter:  NewRateLimiter(bc.Config.Inference.MaxRequestsTask),
+		security:     security.NewPolicy(bc.Config.Security),
 	}
 }
 
@@ -94,47 +98,77 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		return nil, ErrTokenCapExceeded
 	}
 
-	// --- 2. Model allowlist + tier check ---
-	modelTier, known := b.modelTiers[req.ModelID]
+	// --- 2. Prompt safety analysis and routing ---
+	sanitizedMessages, analysis := b.prepareMessages(req)
+	effectiveReq := req
+	effectiveTier := req.Tier
+
+	if len(analysis.Redactions) > 0 {
+		b.emitSecurityRedactions(req, analysis.Redactions)
+	}
+
+	overrideAllowed := req.AllowExternalForSensitive && b.cfg.Security.AllowExternalForRedactedSensitive
+	forceLocal := analysis.SecretBearing && b.cfg.Security.ForceLocalForSecretBearing && !overrideAllowed
+	if forceLocal {
+		localModelID, ok := b.firstLocalModel()
+		if !ok {
+			err := ErrSecretBearingRequiresLocal
+			b.emitInferenceFailed(req, err)
+			return nil, err
+		}
+		effectiveReq.ModelID = localModelID
+		effectiveTier = "local"
+		b.emitSecurityLocalRoute(req, req.ModelID, localModelID, analysis.SecurityCritical)
+	} else if analysis.SecretBearing && overrideAllowed {
+		b.emitSecurityOverride(req, analysis.SecurityCritical)
+	}
+
+	// --- 3. Model allowlist + tier check ---
+	modelTier, known := b.modelTiers[effectiveReq.ModelID]
 	if !known {
 		return nil, ErrModelNotAllowed
 	}
-	if !tierAllowed(req.Tier, modelTier) {
+	if !tierAllowed(effectiveTier, modelTier) {
 		return nil, ErrModelNotAllowed
 	}
 
-	// --- 3. Budget pre-authorization ---
-	pricing := b.modelPricing[req.ModelID]
+	// --- 4. Budget pre-authorization ---
+	pricing := b.modelPricing[effectiveReq.ModelID]
 	if err := b.budget.Authorize(req.MaxTokens, pricing); err != nil {
 		return nil, err
 	}
 
-	// --- 4. Rate limit check ---
+	// --- 5. Rate limit check ---
 	if err := b.rateLimiter.Allow(req.TaskID); err != nil {
 		return nil, err
 	}
 
-	// --- 5. Build provider request ---
-	messages := b.buildMessages(req)
+	// --- 6. Build provider request ---
 	provReq := ProviderRequest{
-		Model:              req.ModelID,
-		Messages:           messages,
+		Model:              effectiveReq.ModelID,
+		Messages:           sanitizedMessages,
 		MaxTokens:          req.MaxTokens,
 		Temperature:        req.Temperature,
 		GrammarConstraints: req.GrammarConstraints,
 	}
 
-	// --- 6. Emit inference_requested event ---
+	// --- 7. Emit inference_requested event ---
 	b.bus.Publish(events.EngineEvent{
 		Type:      events.InferenceRequested,
 		RunID:     req.RunID,
 		TaskID:    req.TaskID,
 		AgentType: req.AgentType,
 		Timestamp: time.Now().UTC(),
-		Details:   map[string]any{"model_id": req.ModelID, "max_tokens": req.MaxTokens},
+		Details: map[string]any{
+			"model_id":           effectiveReq.ModelID,
+			"requested_model_id": req.ModelID,
+			"max_tokens":         req.MaxTokens,
+			"secret_bearing":     analysis.SecretBearing,
+			"security_critical":  analysis.SecurityCritical,
+		},
 	})
 
-	// --- 7. Route to provider ---
+	// --- 8. Route to provider ---
 	provider, err := b.selectProvider(ctx, modelTier)
 	if err != nil {
 		b.emitProviderUnavailable(req, modelTier)
@@ -142,7 +176,7 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		return nil, err
 	}
 
-	// --- 8. Execute request ---
+	// --- 9. Execute request ---
 	startTime := time.Now()
 	provResp, err := provider.Complete(ctx, provReq)
 	latencyMs := time.Since(startTime).Milliseconds()
@@ -151,20 +185,21 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 		return nil, fmt.Errorf("inference: provider %s: %w", provider.Name(), err)
 	}
 
-	// --- 9. Calculate actual cost ---
+	// --- 10. Calculate actual cost ---
 	actualCost := float64(provResp.InputTokens)*pricing.PromptCostPerToken +
 		float64(provResp.OutputTokens)*pricing.CompletionCostPerToken
 
-	// --- 9. Record cost in budget tracker ---
+	// --- 11. Record cost in budget tracker ---
 	b.budget.Record(actualCost)
 
-	// --- 10. Log cost to database ---
-	b.logCost(req, provResp, actualCost)
+	// --- 12. Log cost to database ---
+	effectiveReq.Tier = effectiveTier
+	b.logCost(effectiveReq, provResp, actualCost)
 
-	// --- 11. Emit completion event ---
-	b.emitInferenceCompleted(req, provResp, provider.Name(), actualCost, latencyMs)
+	// --- 13. Emit completion event ---
+	b.emitInferenceCompleted(effectiveReq, provResp, provider.Name(), actualCost, latencyMs)
 
-	// --- 12. Check budget warning/exceeded thresholds ---
+	// --- 14. Check budget warning/exceeded thresholds ---
 	if b.budget.Exceeded() {
 		b.bus.Publish(events.EngineEvent{
 			Type:    events.BudgetExceeded,
@@ -192,20 +227,42 @@ func (b *Broker) Infer(ctx context.Context, req engine.InferenceRequest) (*engin
 	}, nil
 }
 
-// buildMessages converts engine request to provider messages.
+type requestAnalysis struct {
+	Redactions       []security.RedactionEvent
+	SecretBearing    bool
+	SecurityCritical bool
+}
+
+// buildMessages converts engine request to provider messages and applies prompt-safety redaction.
 // Messages field takes precedence over legacy Prompt field.
-func (b *Broker) buildMessages(req engine.InferenceRequest) []Message {
+func (b *Broker) prepareMessages(req engine.InferenceRequest) ([]Message, requestAnalysis) {
+	var (
+		msgs     []Message
+		analysis requestAnalysis
+	)
+
 	if len(req.Messages) > 0 {
-		msgs := make([]Message, len(req.Messages))
+		msgs = make([]Message, len(req.Messages))
 		for i, m := range req.Messages {
-			msgs[i] = Message{Role: m.Role, Content: m.Content}
+			contentAnalysis := b.security.AnalyzeContent("", m.Content)
+			msgs[i] = Message{Role: m.Role, Content: contentAnalysis.RedactedContent}
+			analysis.Redactions = append(analysis.Redactions, contentAnalysis.Redactions...)
+			analysis.SecretBearing = analysis.SecretBearing || contentAnalysis.SecretBearing
 		}
-		return msgs
+	} else if req.Prompt != "" {
+		contentAnalysis := b.security.AnalyzeContent("", req.Prompt)
+		msgs = []Message{{Role: "user", Content: contentAnalysis.RedactedContent}}
+		analysis.Redactions = append(analysis.Redactions, contentAnalysis.Redactions...)
+		analysis.SecretBearing = analysis.SecretBearing || contentAnalysis.SecretBearing
 	}
-	if req.Prompt != "" {
-		return []Message{{Role: "user", Content: req.Prompt}}
+
+	for _, path := range req.ContextFiles {
+		classification := b.security.ClassifyPath(path)
+		analysis.SecretBearing = analysis.SecretBearing || classification.Sensitive || classification.Excluded
+		analysis.SecurityCritical = analysis.SecurityCritical || classification.SecurityCritical
 	}
-	return nil
+
+	return msgs, analysis
 }
 
 // selectProvider picks the right provider based on model tier and availability.
@@ -237,6 +294,20 @@ func tierAllowed(taskTier, modelTier string) bool {
 		return false
 	}
 	return ml <= tl
+}
+
+func (b *Broker) firstLocalModel() (string, bool) {
+	var localModels []string
+	for modelID, tier := range b.modelTiers {
+		if tier == "local" {
+			localModels = append(localModels, modelID)
+		}
+	}
+	sort.Strings(localModels)
+	if len(localModels) == 0 {
+		return "", false
+	}
+	return localModels[0], true
 }
 
 // logCost persists a cost entry to the database.
@@ -304,6 +375,52 @@ func (b *Broker) emitInferenceFailed(req engine.InferenceRequest, err error) {
 		Details: map[string]any{
 			"model_id": req.ModelID,
 			"error":    err.Error(),
+		},
+	})
+}
+
+func (b *Broker) emitSecurityRedactions(req engine.InferenceRequest, redactions []security.RedactionEvent) {
+	for _, redaction := range redactions {
+		b.bus.Publish(events.EngineEvent{
+			Type:      events.SecurityRedaction,
+			RunID:     req.RunID,
+			TaskID:    req.TaskID,
+			AgentType: req.AgentType,
+			Timestamp: time.Now().UTC(),
+			Details: map[string]any{
+				"file":    redaction.File,
+				"line":    redaction.Line,
+				"pattern": redaction.Pattern,
+			},
+		})
+	}
+}
+
+func (b *Broker) emitSecurityOverride(req engine.InferenceRequest, securityCritical bool) {
+	b.bus.Publish(events.EngineEvent{
+		Type:      events.SecurityOverrideApproved,
+		RunID:     req.RunID,
+		TaskID:    req.TaskID,
+		AgentType: req.AgentType,
+		Timestamp: time.Now().UTC(),
+		Details: map[string]any{
+			"requested_model_id": req.ModelID,
+			"security_critical":  securityCritical,
+		},
+	})
+}
+
+func (b *Broker) emitSecurityLocalRoute(req engine.InferenceRequest, requestedModelID, localModelID string, securityCritical bool) {
+	b.bus.Publish(events.EngineEvent{
+		Type:      events.SecurityLocalRouted,
+		RunID:     req.RunID,
+		TaskID:    req.TaskID,
+		AgentType: req.AgentType,
+		Timestamp: time.Now().UTC(),
+		Details: map[string]any{
+			"requested_model_id": requestedModelID,
+			"local_model_id":     localModelID,
+			"security_critical":  securityCritical,
 		},
 	})
 }

@@ -43,17 +43,19 @@ type InferenceMessage struct {
 // InferenceRequest describes a model inference request from an agent.
 // Per Architecture Section 19.5 and 20.4.
 type InferenceRequest struct {
-	RunID              string
-	TaskID             string
-	AttemptID          int64
-	AgentType          string // meeseeks, reviewer, orchestrator, sub_orchestrator
-	ModelID            string
-	Tier               string // local, cheap, standard, premium
-	Messages           []InferenceMessage
-	Prompt             string  // legacy single-prompt shorthand; Messages takes precedence
-	MaxTokens          int
-	Temperature        float64
-	GrammarConstraints *string // GBNF grammar for BitNet structured output
+	RunID                     string
+	TaskID                    string
+	AttemptID                 int64
+	AgentType                 string // meeseeks, reviewer, orchestrator, sub_orchestrator
+	ModelID                   string
+	Tier                      string // local, cheap, standard, premium
+	Messages                  []InferenceMessage
+	Prompt                    string   // legacy single-prompt shorthand; Messages takes precedence
+	ContextFiles              []string // repo-derived files represented in the prompt payload
+	AllowExternalForSensitive bool     // explicit user override for redacted sensitive context
+	MaxTokens                 int
+	Temperature               float64
+	GrammarConstraints        *string // GBNF grammar for BitNet structured output
 }
 
 // InferenceResponse holds the result of a model inference request.

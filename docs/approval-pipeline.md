@@ -225,6 +225,8 @@ type CheckResult struct {
 
 The engine spawns a reviewer container with a ReviewSpec containing the original TaskSpec, Meeseeks output, and validation results. The reviewer evaluates and returns APPROVE or REJECT with feedback.
 
+Phase 18 hardens this handoff: repo-derived content in TaskSpecs and ReviewSpecs is wrapped as untrusted data with source provenance, and instruction-like comments are sanitized before the reviewer sees them.
+
 ### Risky File Detection
 
 Per Architecture Section 11.6, certain file types require elevated review regardless of task tier. `IsRiskyFile(path string) bool` checks against these patterns:
@@ -293,6 +295,17 @@ Per Architecture Section 11.3:
 7. **Destroy container** — guaranteed via `defer`
 
 Returns a `ReviewResult` with verdict, feedback, reviewer model/family, and effective tier.
+
+### Prompt-Safe Review Payloads
+
+The review pipeline now relies on the shared phase-18 prompt-safety layer:
+
+- TaskSpec context blocks are written as `<untrusted_repo_content>` blocks
+- Meeseeks output in the ReviewSpec is also wrapped as untrusted content
+- source paths and line ranges are preserved where available
+- secret-heavy blocks are excluded rather than forwarded verbatim
+
+This keeps reviewer instructions separate from repository text and reduces the chance of prompt injection through comments or generated code.
 
 ### Test Coverage (29 tests)
 

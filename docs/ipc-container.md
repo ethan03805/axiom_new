@@ -84,7 +84,14 @@ spec := ipc.TaskSpec{
     TaskID:       "task-042",
     BaseSnapshot: "abc123def",
     Objective:    "Implement user authentication handler",
-    Context:      "### Symbol Context (tier: symbol)\nfunc Authenticate(...)",
+    ContextBlocks: []ipc.ContextBlock{
+        {
+            Label:      "Symbol Context (tier: symbol)",
+            SourcePath: "internal/auth/service.go",
+            StartLine:  12,
+            Content:    "func Authenticate(...)",
+        },
+    },
     InterfaceContract: "func Authenticate(token string) (*User, error)",
     Constraints: ipc.TaskConstraints{
         Language:      "Go 1.25",
@@ -100,7 +107,14 @@ spec := ipc.TaskSpec{
 err := ipc.WriteTaskSpec(dirs.Spec, spec)
 ```
 
-The generated spec includes a mandatory output format section directing Meeseeks to write all output files to `/workspace/staging/` with a `manifest.json`.
+The generated spec includes:
+
+- a mandatory output format section directing Meeseeks to write all output files to `/workspace/staging/` with a `manifest.json`
+- prompt-safety wrapping for repo-derived context using `<untrusted_repo_content ...>` blocks
+- source provenance and line ranges for structured context blocks
+- sanitization of instruction-like comments before the spec is written
+
+Legacy `Context string` is still supported, but it now passes through the same prompt-safety wrapper.
 
 ### ReviewSpec
 
@@ -111,13 +125,26 @@ spec := ipc.ReviewSpec{
     TaskID:                "task-042",
     OriginalTaskSpec:      "...",
     MeeseeksOutput:        "...",
+    MeeseeksOutputSource:  "internal/auth/service.go",
     AutomatedCheckResults: "✅ Compilation: PASS\n✅ Tests: PASS (12/12)",
     ReviewInstructions:    "Evaluate output against TaskSpec.",
 }
 err := ipc.WriteReviewSpec(dirs.Spec, spec)
 ```
 
-The review spec includes the standard verdict/criterion/feedback template.
+The review spec includes the standard verdict/criterion/feedback template, and the Meeseeks output is now wrapped as untrusted repository content before being handed to the reviewer.
+
+### Prompt Safety
+
+Phase 18 adds a shared prompt-safety layer to TaskSpec and ReviewSpec generation:
+
+- repo-derived content is wrapped in `<untrusted_repo_content>` blocks
+- every wrapped block includes `source="..."` provenance
+- line ranges are included when known
+- instruction-like comments are replaced with `[COMMENT SANITIZED: instruction-like content removed]`
+- excluded or high-secret-density content is replaced with an explicit exclusion marker instead of being copied into the prompt
+
+See [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md) for the full packaging and redaction rules.
 
 ## Docker Container Service
 

@@ -69,6 +69,20 @@ axiom init
 
 The generated `.axiom/config.toml` contains all configuration with architecture defaults. See [Configuration Reference](configuration.md) for details.
 
+## Secret Handling and Prompt Safety
+
+Phase 18 makes prompt packaging safer by default:
+
+- repository text is treated as untrusted data
+- `.axiom/`, `.env*`, and log files are excluded from prompt context
+- detected secrets are redacted before model requests are sent
+- secret-bearing requests route to local inference by default
+- security-critical code such as auth or crypto can still use external models when the payload itself is safe
+
+Task and review prompts now wrap repo-derived content in explicit `<untrusted_repo_content>` blocks with source paths and line ranges. This keeps instructions separate from repository data and reduces prompt-injection risk from comments or generated files.
+
+See [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md) for the full behavior and configuration model.
+
 ## Generate Runtime Instructions
 
 If you want Claude Code, Codex, OpenCode, or a Claw runtime to use Axiom deterministically, generate the runtime instruction artifacts for that runtime:
@@ -354,6 +368,8 @@ Available now:
 - `axiom skill generate --runtime <claw|claude-code|codex|opencode>` — generate runtime instruction artifacts that force supported orchestrators to stay inside the Axiom workflow
 
 - [Runtime Skill System Reference](runtime-skills.md) - detailed artifact list, enforcement strategy, and regeneration guidance
+
+- [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md) - secret scanning, local-only routing defaults, and prompt-safe spec packaging
 
 Still planned for a later phase:
 

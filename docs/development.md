@@ -142,12 +142,14 @@ axiom/
 │   │   ├── server.go       # Server lifecycle, route registration, audit logging middleware
 │   │   └── tunnel.go       # Cloudflare Tunnel management (start/stop/status)
 │   │
+│   ├── security/           # Secret scanning, prompt safety, redaction (Phase 18)
+│   │   └── policy.go       # Path classification, redaction, comment sanitization, prompt-safe wrapping
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
 │   ├── doctor/             # System health checks
 │   ├── orchestrator/       # Orchestrator lifecycle management
-│   ├── security/           # Secret scanning, prompt safety, redaction
 ├── migrations/             # (Legacy location — migrations are now embedded)
 ├── testdata/               # Test fixture data
 ├── scripts/                # Build and utility scripts
@@ -360,7 +362,28 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 14 | Plain CLI Command Surface | Complete |
 | 15 | Session UX Manager and Bubble Tea TUI | Complete |
 | 16 | API Server, WebSockets, and Tunnel Support | Complete |
-| 17-20 | Remaining phases | Not started |
+| 17 | Runtime Skill Generation | Complete |
+| 18 | Security, Secret Handling, and Prompt Safety | Complete |
+| 19-20 | Remaining phases | Not started |
+
+### Phase 18 Summary
+
+Phase 18 implemented the security and prompt-safety layer from Architecture Sections 29.4 and 29.6:
+
+- **Security policy package** (`security/`) - New `internal/security/` package provides path classification, regex-based secret scanning, redaction metadata, instruction-like comment flagging, and prompt-safe untrusted-content wrapping.
+
+- **Inference broker hardening** (`inference/broker.go`) - `Broker.Infer` now sanitizes prompt payloads before provider execution, emits `security_redaction` audit events without secret values, routes secret-bearing requests to the local tier by default, and logs explicit external overrides via `security_override_approved`.
+
+- **Sensitive vs. security-critical separation** (`engine/interfaces.go`, `inference/broker.go`) - `engine.InferenceRequest` now distinguishes the repo files represented in the prompt (`ContextFiles`) from the explicit external-use override (`AllowExternalForSensitive`). Security-critical paths such as auth code remain eligible for external models when the payload itself is safe; secret-bearing payloads do not.
+
+- **Prompt-safe spec generation** (`ipc/spec.go`) - TaskSpec context blocks and ReviewSpec Meeseeks output are now wrapped in `<untrusted_repo_content>` envelopes with source provenance and line ranges. Instruction-like comments are sanitized before prompt packaging.
+
+- **Test coverage** - 8 new tests across 3 files:
+  - `security/security_test.go` (3) - path classification, secret redaction density, comment sanitization
+  - `inference/broker_test.go` (3) - local routing for secret-bearing payloads, explicit override behavior, security-critical-safe cloud routing
+  - `ipc/spec_test.go` (2) - prompt-safe TaskSpec and ReviewSpec wrapping
+
+Known boundary: full prompt log persistence still belongs to Phase 19, but Phase 18 now guarantees the reusable prompt payload is already redacted before any future logging surface consumes it.
 
 ### Phase 16 Summary
 

@@ -47,29 +47,33 @@ Two implementations are provided:
 
 When `Broker.Infer()` is called, it executes these steps in order:
 
-1. **Token cap check** — `max_tokens` must not exceed `inference.token_cap_per_request` (default 16384). Returns `ErrTokenCapExceeded`.
+1. **Token cap check** - `max_tokens` must not exceed `inference.token_cap_per_request` (default 16384). Returns `ErrTokenCapExceeded`.
 
-2. **Model allowlist + tier check** — The requested `model_id` must be registered in the broker's model-tier map. The model's tier must be at or below the task's tier. Returns `ErrModelNotAllowed`.
+2. **Prompt safety analysis** - Message content is scanned for secrets before prompt packaging. Matching values are replaced with `[REDACTED]`, instruction-like comments are sanitized, and `security_redaction` events are emitted without storing secret values.
 
-3. **Budget pre-authorization** — Calculates worst-case cost (`max_tokens * completion_cost_per_token`) and checks against remaining budget. Zero-cost models (BitNet) bypass this check. Returns `ErrBudgetExceeded`.
+3. **Secret-aware routing** - Secret-bearing requests route to the local tier by default. If `AllowExternalForSensitive` is explicitly set and `security.allow_external_for_redacted_sensitive = true`, the broker keeps the external route but still sends only redacted content. Security-critical paths alone do not force local inference.
 
-4. **Rate limit check** — Increments the per-task request counter and rejects if it exceeds `inference.max_requests_per_task` (default 50). Returns `ErrRateLimitExceeded`.
+4. **Model allowlist + tier check** - The effective `model_id` must be registered in the broker's model-tier map. The model's tier must be at or below the task's tier. Returns `ErrModelNotAllowed`.
 
-5. **Emit `inference_requested` event** — Logged to the event bus with model ID and max tokens.
+5. **Budget pre-authorization** - Calculates worst-case cost (`max_tokens * completion_cost_per_token`) and checks against remaining budget. Zero-cost models (BitNet) bypass this check. Returns `ErrBudgetExceeded`.
 
-6. **Provider selection** — Local-tier tasks route to BitNet. Other tiers route to OpenRouter. If the selected provider is unavailable, emits `provider_unavailable` and returns `ErrProviderDown`.
+6. **Rate limit check** - Increments the per-task request counter and rejects if it exceeds `inference.max_requests_per_task` (default 50). Returns `ErrRateLimitExceeded`.
 
-7. **Execute request** — Sends the chat completion request to the provider. Measures latency.
+7. **Emit `inference_requested` event** - Logged to the event bus with the effective model, requested model, and security classification flags.
 
-8. **Calculate actual cost** — `(input_tokens * prompt_cost) + (output_tokens * completion_cost)`.
+8. **Provider selection** - Local-tier tasks route to BitNet. Other tiers route to OpenRouter. If the selected provider is unavailable, emits `provider_unavailable` and returns `ErrProviderDown`.
 
-9. **Record cost** — Updates the budget enforcer's running total.
+9. **Execute request** - Sends the sanitized chat completion request to the provider. Measures latency.
 
-10. **Log to database** — Inserts a `cost_log` entry with run ID, task ID, attempt ID, agent type, model ID, token counts, and cost.
+10. **Calculate actual cost** - `(input_tokens * prompt_cost) + (output_tokens * completion_cost)`.
 
-11. **Emit `inference_completed` event** — Includes model, provider, tokens, cost, finish reason, and latency.
+11. **Record cost** - Updates the budget enforcer's running total.
 
-12. **Budget threshold check** — Emits `budget_exceeded` if spend > max, or `budget_warning` if spend >= warn threshold.
+12. **Log to database** - Inserts a `cost_log` entry with run ID, task ID, attempt ID, agent type, model ID, token counts, and cost.
+
+13. **Emit `inference_completed` event** - Includes model, provider, tokens, cost, finish reason, and latency.
+
+14. **Budget threshold check** - Emits `budget_exceeded` if spend > max, or `budget_warning` if spend >= warn threshold.
 
 ## Creating a Broker
 
@@ -121,6 +125,11 @@ eng, err := engine.New(engine.Options{
     Index:     indexService,
 })
 ```
+
+Phase 18 adds two optional fields to `engine.InferenceRequest`:
+
+- `ContextFiles []string` - repo paths represented in the prompt, used for sensitive/security-critical classification
+- `AllowExternalForSensitive bool` - explicit per-request override allowing external inference with redacted sensitive content
 
 ## OpenRouter Provider
 
@@ -251,10 +260,13 @@ The broker validates this on every request. A local-tier task requesting a stand
 
 | Event | When | Details |
 |-------|------|---------|
-| `inference_requested` | Before provider call | `model_id`, `max_tokens` |
+| `inference_requested` | Before provider call | `model_id`, `requested_model_id`, `max_tokens`, `secret_bearing`, `security_critical` |
 | `inference_completed` | After successful response | `model_id`, `provider`, `input_tokens`, `output_tokens`, `cost_usd`, `finish_reason`, `latency_ms` |
 | `inference_failed` | On provider error or validation rejection | `model_id`, `error` |
 | `provider_unavailable` | When no provider can serve the request | `tier`, `model_id` |
+| `security_redaction` | For each redacted secret match | `file`, `line`, `pattern` |
+| `security_local_routed` | When a secret-bearing request is forced local | `requested_model_id`, `local_model_id`, `security_critical` |
+| `security_override_approved` | When redacted sensitive content is allowed externally | `requested_model_id`, `security_critical` |
 | `budget_warning` | When spend reaches warn threshold | `spent`, `max` |
 | `budget_exceeded` | When spend exceeds budget ceiling | `spent`, `max` |
 
@@ -283,6 +295,7 @@ The `TotalCostByRun()` method sums all cost entries for a run and is used by:
 | `ErrTokenCapExceeded` | `max_tokens` exceeds configured cap |
 | `ErrProviderDown` | No provider available for the requested tier |
 | `ErrNoProvider` | No provider configured for the request |
+| `ErrSecretBearingRequiresLocal` | Secret-bearing context requires local inference but no local route is available |
 
 All errors are checked via `errors.Is()`.
 
@@ -294,12 +307,14 @@ All errors are checked via `errors.Is()`.
 | Rate limiter | 6 | Under/over limit, independent tasks, count, reset, concurrency |
 | OpenRouter provider | 11 | Success, API errors (402/429/500), invalid JSON, empty choices, context cancellation, availability |
 | BitNet provider | 7 | Success, grammar constraints, no-grammar case, availability, errors, empty choices |
-| Broker integration | 16 | Cloud/local routing, allowlist, tier mismatch, budget rejection, rate limit, token cap, cost logging, event emission, fallback, both-down, zero-cost, budget tracking, prompt fallback, provider errors |
+| Broker integration | 19 | Cloud/local routing, allowlist, tier mismatch, budget rejection, rate limit, token cap, cost logging, event emission, fallback, both-down, zero-cost, budget tracking, prompt fallback, provider errors, secret redaction, override routing, security-critical separation |
 
-Total: **51 tests**. All use mock HTTP servers (`httptest.NewServer`) or mock provider implementations. Broker tests create real SQLite databases for cost log verification.
+Total: **54 tests**. All use mock HTTP servers (`httptest.NewServer`) or mock provider implementations. Broker tests create real SQLite databases for cost log verification.
 
 ## Known Deferred Items
 
 - **Streaming via chunked IPC output files** — The `Stream` field exists in `ProviderRequest` but is hardcoded to `false`. Streaming requires the IPC chunk writer and integrates with Phase 10 (task execution).
 - **Queue-until-connectivity for non-local tasks** — When the cloud provider is down, non-local tasks receive `ErrProviderDown` immediately. The queue-and-retry behavior belongs in the Phase 10 scheduler.
 - **Dynamic model pricing at runtime** — Phase 7 added the Model Registry which loads and refreshes pricing from OpenRouter's model API. The `Registry.BrokerMaps()` method extracts `ModelPricing` and tier maps suitable for broker construction. However, the broker still receives these maps statically at construction time. Hot-reloading pricing without restarting the broker is deferred.
+
+See [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md) for the shared phase-18 redaction, prompt-wrapping, and secret-routing rules used by the broker.

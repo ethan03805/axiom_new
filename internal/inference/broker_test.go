@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openaxiom/axiom/internal/config"
@@ -50,12 +51,14 @@ type mockProvider struct {
 	response  *ProviderResponse
 	err       error
 	calls     int
+	lastReq   ProviderRequest
 }
 
-func (m *mockProvider) Name() string                        { return m.name }
-func (m *mockProvider) Available(_ context.Context) bool    { return m.available }
-func (m *mockProvider) Complete(_ context.Context, _ ProviderRequest) (*ProviderResponse, error) {
+func (m *mockProvider) Name() string                     { return m.name }
+func (m *mockProvider) Available(_ context.Context) bool { return m.available }
+func (m *mockProvider) Complete(_ context.Context, req ProviderRequest) (*ProviderResponse, error) {
 	m.calls++
+	m.lastReq = req
 	return m.response, m.err
 }
 
@@ -110,8 +113,8 @@ func setupTestBroker(t *testing.T, budgetMax float64) (*Broker, *mockProvider, *
 	// Model tier allowlist
 	allowlist := map[string]string{
 		"anthropic/claude-4-sonnet": "standard",
-		"openai/gpt-4o":            "standard",
-		"bitnet/falcon3-1b":        "local",
+		"openai/gpt-4o":             "standard",
+		"bitnet/falcon3-1b":         "local",
 	}
 
 	broker := NewBroker(BrokerConfig{
@@ -248,7 +251,7 @@ func TestBroker_Infer_RejectsTierMismatch(t *testing.T) {
 		TaskID:    taskID,
 		AgentType: "meeseeks",
 		ModelID:   "anthropic/claude-4-sonnet", // standard tier model
-		Tier:      "local",                      // but task is local tier
+		Tier:      "local",                     // but task is local tier
 		Messages:  []engine.InferenceMessage{{Role: "user", Content: "hello"}},
 		MaxTokens: 1024,
 	})
@@ -566,5 +569,125 @@ func TestBroker_Infer_ProviderErrorPropagated(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when provider fails")
+	}
+}
+
+func TestBroker_Infer_RoutesSecretBearingRequestsToLocalAndRedactsPayload(t *testing.T) {
+	broker, cloud, local, runID, taskID := setupTestBroker(t, 10.0)
+
+	resp, err := broker.Infer(context.Background(), engine.InferenceRequest{
+		RunID:     runID,
+		TaskID:    taskID,
+		AgentType: "meeseeks",
+		ModelID:   "anthropic/claude-4-sonnet",
+		Tier:      "standard",
+		Messages: []engine.InferenceMessage{{
+			Role:    "user",
+			Content: `Use OPENROUTER_API_KEY="sk-or-v1-supersecretvalue1234567890" to debug this failure.`,
+		}},
+		MaxTokens: 100,
+	})
+	if err != nil {
+		t.Fatalf("Infer failed: %v", err)
+	}
+
+	if resp.ProviderName != "bitnet" {
+		t.Fatalf("expected secret-bearing request to route to local provider, got %q", resp.ProviderName)
+	}
+	if cloud.calls != 0 {
+		t.Fatalf("expected cloud provider to be skipped, got %d calls", cloud.calls)
+	}
+	if local.calls != 1 {
+		t.Fatalf("expected local provider to be used once, got %d calls", local.calls)
+	}
+	if local.lastReq.Model != "bitnet/falcon3-1b" {
+		t.Fatalf("expected rerouted local model, got %q", local.lastReq.Model)
+	}
+	if strings.Contains(local.lastReq.Messages[0].Content, "sk-or-v1-supersecretvalue1234567890") {
+		t.Fatal("local provider should receive redacted content only")
+	}
+	if !strings.Contains(local.lastReq.Messages[0].Content, "[REDACTED]") {
+		t.Fatal("expected redaction marker in sanitized request")
+	}
+
+	redactions, err := broker.db.ListEventsByType(runID, "security_redaction")
+	if err != nil {
+		t.Fatalf("listing security redactions: %v", err)
+	}
+	if len(redactions) == 0 {
+		t.Fatal("expected redaction events to be recorded")
+	}
+}
+
+func TestBroker_Infer_ExplicitSensitiveOverrideKeepsCloudRouteButStillRedacts(t *testing.T) {
+	broker, cloud, local, runID, taskID := setupTestBroker(t, 10.0)
+
+	resp, err := broker.Infer(context.Background(), engine.InferenceRequest{
+		RunID:                     runID,
+		TaskID:                    taskID,
+		AgentType:                 "meeseeks",
+		ModelID:                   "anthropic/claude-4-sonnet",
+		Tier:                      "standard",
+		AllowExternalForSensitive: true,
+		Messages: []engine.InferenceMessage{{
+			Role:    "user",
+			Content: `Inspect this credential: ghp_123456789012345678901234567890123456`,
+		}},
+		MaxTokens: 100,
+	})
+	if err != nil {
+		t.Fatalf("Infer failed: %v", err)
+	}
+
+	if resp.ProviderName != "openrouter" {
+		t.Fatalf("expected explicit override to keep cloud route, got %q", resp.ProviderName)
+	}
+	if cloud.calls != 1 {
+		t.Fatalf("expected cloud provider to be used once, got %d calls", cloud.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("expected local provider to be skipped, got %d calls", local.calls)
+	}
+	if strings.Contains(cloud.lastReq.Messages[0].Content, "ghp_123456789012345678901234567890123456") {
+		t.Fatal("override should still redact raw secrets before external inference")
+	}
+
+	overrideEvents, err := broker.db.ListEventsByType(runID, "security_override_approved")
+	if err != nil {
+		t.Fatalf("listing security override events: %v", err)
+	}
+	if len(overrideEvents) != 1 {
+		t.Fatalf("expected 1 override event, got %d", len(overrideEvents))
+	}
+}
+
+func TestBroker_Infer_SecurityCriticalPathsDoNotForceLocalWithoutSecrets(t *testing.T) {
+	broker, cloud, local, runID, taskID := setupTestBroker(t, 10.0)
+
+	resp, err := broker.Infer(context.Background(), engine.InferenceRequest{
+		RunID:        runID,
+		TaskID:       taskID,
+		AgentType:    "meeseeks",
+		ModelID:      "anthropic/claude-4-sonnet",
+		Tier:         "standard",
+		ContextFiles: []string{"internal/auth/service.go"},
+		Messages: []engine.InferenceMessage{{
+			Role:    "user",
+			Content: "Refactor the token validator for better readability.",
+		}},
+		MaxTokens: 100,
+	})
+	if err != nil {
+		t.Fatalf("Infer failed: %v", err)
+	}
+
+	if resp.ProviderName != "openrouter" {
+		t.Fatalf("security-critical code without secret-bearing content should remain eligible for cloud review, got %q", resp.ProviderName)
+	}
+	if cloud.calls != 1 {
+		t.Fatalf("expected cloud provider to be called once, got %d", cloud.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("expected local provider to not be forced for security-critical-only context, got %d", local.calls)
 	}
 }

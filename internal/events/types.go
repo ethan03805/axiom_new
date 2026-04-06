@@ -49,11 +49,14 @@ const (
 	SRSApproved  EventType = "srs_approved"
 	SRSRejected  EventType = "srs_rejected"
 
-	InferenceRequested   EventType = "inference_requested"
-	InferenceCompleted   EventType = "inference_completed"
-	InferenceFailed      EventType = "inference_failed"
-	ProviderAvailable    EventType = "provider_available"
-	ProviderUnavailable  EventType = "provider_unavailable"
+	InferenceRequested       EventType = "inference_requested"
+	InferenceCompleted       EventType = "inference_completed"
+	InferenceFailed          EventType = "inference_failed"
+	ProviderAvailable        EventType = "provider_available"
+	ProviderUnavailable      EventType = "provider_unavailable"
+	SecurityRedaction        EventType = "security_redaction"
+	SecurityOverrideApproved EventType = "security_override_approved"
+	SecurityLocalRouted      EventType = "security_local_routed"
 )
 
 // --- View-model events (fanned out to subscribers, NOT persisted) ---

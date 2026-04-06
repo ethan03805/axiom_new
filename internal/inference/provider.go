@@ -54,10 +54,11 @@ type ModelPricing struct {
 
 // Sentinel errors for the inference package.
 var (
-	ErrBudgetExceeded    = errors.New("inference: budget exceeded")
-	ErrRateLimitExceeded = errors.New("inference: per-task rate limit exceeded")
-	ErrModelNotAllowed   = errors.New("inference: model not in allowed tier")
-	ErrTokenCapExceeded  = errors.New("inference: max_tokens exceeds cap")
-	ErrProviderDown      = errors.New("inference: provider unavailable")
-	ErrNoProvider        = errors.New("inference: no provider available for request")
+	ErrBudgetExceeded             = errors.New("inference: budget exceeded")
+	ErrRateLimitExceeded          = errors.New("inference: per-task rate limit exceeded")
+	ErrModelNotAllowed            = errors.New("inference: model not in allowed tier")
+	ErrTokenCapExceeded           = errors.New("inference: max_tokens exceeds cap")
+	ErrProviderDown               = errors.New("inference: provider unavailable")
+	ErrNoProvider                 = errors.New("inference: no provider available for request")
+	ErrSecretBearingRequiresLocal = errors.New("inference: secret-bearing request requires local inference")
 )

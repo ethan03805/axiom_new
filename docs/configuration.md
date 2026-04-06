@@ -70,7 +70,12 @@ force_local_for_secret_bearing = true  # Route secret-bearing context to local i
 allow_external_for_redacted_sensitive = true
 sensitive_patterns = [                 # File patterns treated as secret-bearing
     "*.env*",
+    "*.env",
+    ".env.local",
+    ".env.production",
     "*credentials*",
+    "*secret*",
+    "*key*",
     "**/secrets/**"
 ]
 security_critical_patterns = [         # Patterns requiring elevated review
@@ -100,7 +105,7 @@ editor_mode = "default"                # default | vim
 images_enabled = false                 # Image support in TUI
 
 [observability]
-log_prompts = false                    # Opt-in full prompt/response logging
+log_prompts = false                    # Reserved for Phase 19 prompt-log persistence
 log_token_counts = true                # Always log token counts
 ```
 
@@ -127,6 +132,17 @@ The following validation rules are enforced when loading configuration:
 **Note:** The `[inference]` section is not currently validated at startup — only the `openrouter_api_key` must be non-empty for cloud inference to work. Set it in the global config (`~/.axiom/config.toml`) to keep secrets out of the project config.
 
 Invalid configurations produce actionable error messages listing all violations.
+
+## Security Behavior
+
+Phase 18 uses the `[security]` section during prompt packaging and inference routing:
+
+- `sensitive_patterns` and `security_critical_patterns` are additive. They extend the built-in defaults rather than replacing them.
+- Secret-bearing prompt payloads are routed to the local tier by default when `force_local_for_secret_bearing = true`.
+- Explicit external use of redacted sensitive content is only allowed per request and only when `allow_external_for_redacted_sensitive = true`.
+- `.axiom/`, `.env*`, and log files are excluded from prompt packaging regardless of config.
+
+The `observability.log_prompts` flag exists in config today, but the persistence feature itself is still deferred to Phase 19. Phase 18 ensures any future prompt logging can reuse already-redacted payloads.
 
 ## Config Layering Example
 
@@ -168,3 +184,5 @@ The generated artifacts include values from `.axiom/config.toml`. Re-run the com
 - `git.branch_prefix`
 
 See [Runtime Skill System Reference](runtime-skills.md) for the generated file layout.
+
+See [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md) for the full phase-18 behavior.

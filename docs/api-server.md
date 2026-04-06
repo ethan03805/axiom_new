@@ -91,7 +91,7 @@ Authorization: Bearer axm_sk_<token>
 ws://localhost:3000/ws/projects/:id
 ```
 
-Streams real-time project events (task completions, reviews, errors, budget warnings, ECO proposals). Requires `read-only` scope or higher.
+Streams real-time project events (task completions, reviews, errors, budget warnings, ECO proposals, and phase-18 security events such as prompt redactions or local rerouting). Requires `read-only` scope or higher.
 
 ### Control Channel
 

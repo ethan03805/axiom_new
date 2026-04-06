@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/openaxiom/axiom/internal/security"
 )
 
 // TaskSpec represents a self-contained spec delivered to a Meeseeks.
@@ -14,9 +16,18 @@ type TaskSpec struct {
 	BaseSnapshot       string
 	Objective          string
 	Context            string
+	ContextBlocks      []ContextBlock
 	InterfaceContract  string
 	Constraints        TaskConstraints
 	AcceptanceCriteria []string
+}
+
+// ContextBlock holds repo-derived context with provenance for prompt-safe wrapping.
+type ContextBlock struct {
+	Label      string
+	SourcePath string
+	StartLine  int
+	Content    string
 }
 
 // TaskConstraints holds the constraint fields for a TaskSpec.
@@ -33,6 +44,7 @@ type ReviewSpec struct {
 	TaskID                string
 	OriginalTaskSpec      string
 	MeeseeksOutput        string
+	MeeseeksOutputSource  string
 	AutomatedCheckResults string
 	ReviewInstructions    string
 }
@@ -41,6 +53,7 @@ type ReviewSpec struct {
 // The format follows Architecture Section 10.3.
 func WriteTaskSpec(specDir string, spec TaskSpec) error {
 	var b strings.Builder
+	policy := security.NewDefaultPolicy()
 
 	fmt.Fprintf(&b, "# TaskSpec: %s\n\n", spec.TaskID)
 
@@ -48,8 +61,24 @@ func WriteTaskSpec(specDir string, spec TaskSpec) error {
 
 	fmt.Fprintf(&b, "## Objective\n%s\n\n", spec.Objective)
 
-	if spec.Context != "" {
-		fmt.Fprintf(&b, "## Context\n%s\n\n", spec.Context)
+	if len(spec.ContextBlocks) > 0 {
+		b.WriteString("## Context\n")
+		for _, block := range spec.ContextBlocks {
+			label := strings.TrimSpace(block.Label)
+			if label != "" {
+				if strings.HasPrefix(label, "#") {
+					fmt.Fprintf(&b, "%s\n", label)
+				} else {
+					fmt.Fprintf(&b, "### %s\n", label)
+				}
+			}
+
+			promptBlock := policy.BuildPromptBlock(block.SourcePath, block.StartLine, block.Content)
+			fmt.Fprintf(&b, "%s\n\n", promptBlock.Wrapped)
+		}
+	} else if spec.Context != "" {
+		promptBlock := policy.BuildPromptBlock("task_context", 1, spec.Context)
+		fmt.Fprintf(&b, "## Context\n%s\n\n", promptBlock.Wrapped)
 	} else {
 		fmt.Fprintf(&b, "## Context\n<No additional context required for this task.>\n\n")
 	}
@@ -98,12 +127,18 @@ func WriteTaskSpec(specDir string, spec TaskSpec) error {
 // The format follows Architecture Section 11.7.
 func WriteReviewSpec(specDir string, spec ReviewSpec) error {
 	var b strings.Builder
+	policy := security.NewDefaultPolicy()
 
 	fmt.Fprintf(&b, "# ReviewSpec: %s\n\n", spec.TaskID)
 
 	fmt.Fprintf(&b, "## Original TaskSpec\n%s\n\n", spec.OriginalTaskSpec)
 
-	fmt.Fprintf(&b, "## Meeseeks Output\n%s\n\n", spec.MeeseeksOutput)
+	meeseeksSource := spec.MeeseeksOutputSource
+	if meeseeksSource == "" {
+		meeseeksSource = "meeseeks_output"
+	}
+	meeseeksOutput := policy.BuildPromptBlock(meeseeksSource, 1, spec.MeeseeksOutput)
+	fmt.Fprintf(&b, "## Meeseeks Output\n%s\n\n", meeseeksOutput.Wrapped)
 
 	fmt.Fprintf(&b, "## Automated Check Results\n%s\n\n", spec.AutomatedCheckResults)
 
