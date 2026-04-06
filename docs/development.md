@@ -30,7 +30,9 @@ axiom/
 │   │   ├── sessions.go     # UI sessions, messages, summaries, input history
 │   │   ├── events.go       # Events + cost log
 │   │   ├── eco.go          # ECO log + status transitions
-│   │   └── containers.go   # Container session tracking
+│   │   ├── containers.go   # Container session tracking
+│   │   ├── model_registry.go # Model registry CRUD (Phase 7)
+│   │   └── index.go        # Semantic index CRUD (Phase 8)
 │   ├── version/            # Build-time version injection
 │   │
 │   ├── gitops/             # Git operations manager (Phase 4)
@@ -63,6 +65,18 @@ axiom/
 │   ├── bitnet/             # Local BitNet server lifecycle (Phase 7)
 │   │   └── service.go      # Service: Status, ListModels, Start, Stop, Enabled, WeightDir
 │   │
+│   ├── index/              # Semantic indexer and typed query API (Phase 8)
+│   │   ├── types.go        # Domain types (SymbolResult, ModuleGraphResult), exclusion lists, language mapping
+│   │   ├── parser.go       # Parser interface and language registry
+│   │   ├── parser_go.go    # Go parser using go/parser + go/ast (stdlib)
+│   │   ├── parser_ts.go    # TypeScript regex-based parser
+│   │   ├── parser_js.go    # JavaScript parser (reuses TypeScript)
+│   │   ├── parser_python.go # Python regex-based parser
+│   │   ├── parser_rust.go  # Rust regex-based parser
+│   │   ├── indexer.go      # Indexer service: full/incremental indexing, impl detection, package graph
+│   │   ├── query.go        # Typed query API: lookup_symbol, reverse_dependencies, list_exports, find_implementations, module_graph
+│   │   └── engine_adapter.go # IndexerAdapter → engine.IndexService bridge
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
@@ -70,7 +84,6 @@ axiom/
 │   ├── cli/                # CLI command helpers
 │   ├── doctor/             # System health checks
 │   ├── eco/                # Engineering Change Order management
-│   ├── index/              # Semantic indexer (tree-sitter)
 │   ├── manifest/           # Output manifest parsing and validation
 │   ├── mergequeue/         # Serialized merge queue
 │   ├── orchestrator/       # Orchestrator lifecycle management
@@ -156,6 +169,7 @@ The database is built through sequential migrations:
 - `001_initial_schema.sql` — creates 20 tables matching Architecture Section 15.2
 - `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` for independent container lifecycle management (Phase 5)
 - `003_model_registry.sql` — adds `model_registry` table for model catalog with tier, family, and source indexes (Phase 7)
+- `004_semantic_index.sql` — adds 6 semantic index tables (`index_files`, `index_symbols`, `index_imports`, `index_references`, `index_packages`, `index_package_deps`) with 11 performance indexes (Phase 8)
 
 All tables have corresponding repository methods in the `state` package (see [Database Schema Reference](database-schema.md) for the full repository API):
 
@@ -182,6 +196,12 @@ All tables have corresponding repository methods in the `state` package (see [Da
 | `cost_log` | Inference cost tracking |
 | `eco_log` | Engineering Change Orders |
 | `model_registry` | Aggregated model catalog (Phase 7) |
+| `index_files` | Indexed source files with content hashes (Phase 8) |
+| `index_symbols` | Functions, types, interfaces, constants, variables, fields, methods (Phase 8) |
+| `index_imports` | Import declarations per file (Phase 8) |
+| `index_references` | Symbol references for reverse-dependency queries (Phase 8) |
+| `index_packages` | Package/module identity (Phase 8) |
+| `index_package_deps` | Package dependency edges (Phase 8) |
 
 ## Testing
 
@@ -206,7 +226,7 @@ Current test coverage by package:
 |---------|-------|----------|
 | `internal/version` | 2 | Version string formatting |
 | `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
-| `internal/state` | 82 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5), model registry (13) |
+| `internal/state` | 104 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
 | `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
 | `internal/engine` | 28 | Engine lifecycle (8), run lifecycle (8), status projections (5), worker pool (5), service interface wiring (2) |
@@ -216,6 +236,7 @@ Current test coverage by package:
 | `internal/inference` | 51 | Budget enforcer (11), rate limiter (6), OpenRouter provider (11), BitNet provider (7), broker integration (16) |
 | `internal/models` | 19 | Shipped loader (3), OpenRouter fetcher (2), BitNet scanner (2), registry service (7), merge enrichment (1), combined filtering (1), broker maps (1), performance preservation (1), adapter (1) |
 | `internal/bitnet` | 11 | Service creation (1), status up/down (2), model listing (2), enabled/disabled (1), base URL (1), start/stop guards (2), weight dir (1), status fields (1) |
+| `internal/index` | 24 | Full indexing (3), incremental indexing (2), exclusion rules (2), lookup_symbol (6), reverse_dependencies (1), list_exports (2), find_implementations (1), module_graph (2), multi-language (4), edge cases (3) |
 
 ### Test Patterns
 
@@ -228,6 +249,7 @@ Current test coverage by package:
 - Inference tests use `httptest.NewServer` for mock provider endpoints and `mockProvider` for broker integration
 - Model registry tests use `httptest.NewServer` for mock OpenRouter and BitNet API endpoints
 - BitNet service tests use `httptest.NewServer` with a test URL override for mock health and model endpoints
+- Indexer tests use embedded fixture files in `internal/index/testdata/` with Go, TypeScript, Python, and Rust source files
 - No external service dependencies in current tests (Docker, network, inference are all mocked)
 
 ## Architecture Constraints
@@ -257,7 +279,41 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 5 | IPC, Container Lifecycle, and Sandbox Images | Complete |
 | 6 | Inference Broker, Provider Routing, and Cost Enforcement | Complete |
 | 7 | Model Registry and BitNet Operations | Complete |
-| 8-20 | Remaining phases | Not started |
+| 8 | Semantic Indexer and Typed Query API | Complete |
+| 9-20 | Remaining phases | Not started |
+
+### Phase 8 Summary
+
+Phase 8 implemented the semantic indexer and typed query API per Architecture Section 17:
+
+- **Semantic index tables** (`migrations/004_semantic_index.sql`) — 6 SQLite tables for structured code indexing: `index_files` (tracked files with SHA-256 content hashes for incremental reindexing), `index_symbols` (functions, types, interfaces, constants, variables, fields, methods with kind checks, parent references, and exported status), `index_imports` (per-file import declarations), `index_references` (symbol references with usage type: call, reference, implementation), `index_packages` (package identity), and `index_package_deps` (dependency edges). 11 performance indexes on name, kind, file, parent, import path, symbol name, and package path.
+
+- **State layer CRUD** (`state/index.go`) — 20 repository methods: `CreateIndexFile`, `GetIndexFile`, `DeleteIndexFile` (cascades to symbols/imports/references), `UpdateIndexFileHash`, `ListIndexFiles`, `ClearIndex`, `CreateIndexSymbol`, `ListSymbolsByFile`, `LookupSymbol` (with optional kind filter, joins file paths), `ListExportedSymbolsByPackageDir`, `FindImplementations`, `CreateIndexImport`, `ListImportsByFile`, `ListImporterFiles`, `CreateIndexReference`, `ListReferencesBySymbol`, `CreateIndexPackage`, `GetIndexPackage`, `AddPackageDep` (idempotent), `ListPackageDeps`.
+
+- **Parser abstraction** (`index/parser.go`) — `Parser` interface with `Parse(source, relPath)` returning `ParseResult` (symbols, imports, references) and `Language()`. Language-specific parsers registered at init time. Parser implementations:
+  - **Go** (`parser_go.go`) — Uses Go stdlib `go/parser` + `go/ast` for full AST analysis: function signatures with receiver types, type/interface/struct declarations with field and method extraction, const/var declarations, import paths with aliases, function call references. Formats complete function signatures. Superior to tree-sitter for Go-specific analysis.
+  - **TypeScript** (`parser_ts.go`) — Regex-based extraction of exported/private functions, classes, interfaces, type aliases, const/let/var declarations, and import statements. Covers `export` keyword detection.
+  - **JavaScript** (`parser_js.go`) — Reuses TypeScript parser patterns since declaration syntax is compatible.
+  - **Python** (`parser_python.go`) — Regex-based extraction of classes, functions/methods (distinguished by indentation), UPPER_CASE constants, module-level variables, and import/from-import statements. Respects `_` prefix convention for private symbols.
+  - **Rust** (`parser_rust.go`) — Regex-based extraction of `pub`/private fn, struct, trait, enum, type, const, static declarations, `use` statements as imports, and `impl Trait for Type` as implementation references.
+
+- **Indexer service** (`index/indexer.go`) — `Indexer` struct backed by `state.DB`. `Index(ctx, dir)` performs full project indexing: walks the directory tree, excludes `.axiom/`, `.git/`, `node_modules/`, `vendor/`, `__pycache__/`, `target/`, `dist/`, `build/`, and non-source files. Parses each file, stores symbols with parent linking (methods → types), imports, and references. Post-index pass detects Go interface implementations by matching struct method sets against interface method sets. Builds package dependency graph from import declarations with Go module path resolution. `IndexFiles(ctx, dir, paths)` performs incremental reindexing: computes SHA-256 content hashes, skips unchanged files, deletes and re-indexes changed files.
+
+- **Typed query API** (`index/query.go`) — 5 query methods per Architecture Section 17.5:
+  - `LookupSymbol(name, kind)` — finds symbols by name with optional kind filter, returns file paths, line numbers, signatures, export status
+  - `ReverseDependencies(symbolName)` — returns all files/symbols that reference a symbol, with usage type (call, reference, implementation)
+  - `ListExports(packagePath)` — returns all exported symbols in a package directory
+  - `FindImplementations(interfaceName)` — returns types implementing an interface (via implementation references)
+  - `ModuleGraph(rootPackage)` — returns package dependency graph; full graph when rootPackage is empty, BFS subgraph when rooted
+
+- **Engine integration** — `IndexService` interface in `engine/interfaces.go` expanded from 1 method to 7 methods with `SymbolResult`, `ReferenceResult`, `ModuleGraphResult`, `PackageNode`, and `PackageEdge` types. `IndexerAdapter` in `index/engine_adapter.go` bridges `Indexer` to `engine.IndexService` with compile-time assertion.
+
+- **Known deferred items:**
+  - tree-sitter CGO bindings for non-Go languages (currently regex-based; designed for drop-in upgrade when a C compiler is available)
+  - Implementation detection line numbers (currently 0 for Go interface implementations detected post-parse)
+  - CLI command wiring for `axiom index refresh` (Phase 14)
+
+See [Semantic Indexer Reference](semantic-indexer.md) for the full API.
 
 ### Phase 7 Summary
 
@@ -371,7 +427,7 @@ Phase 3 built the trusted control plane that all command surfaces use:
   - Subscriber fan-out supports optional filters, buffered channels, and concurrent-safe operation.
   - SQLite writes are serialized via a dedicated write mutex to avoid SQLITE_BUSY under concurrent publishes.
 
-- **Service interfaces** (`internal/engine/interfaces.go`) — Abstractions for `GitService`, `ContainerService`, `InferenceService`, and `IndexService` so orchestration logic is testable without real Docker or network calls. Tests use noop implementations. `InferenceRequest` includes fields for run/task/attempt tracking, model tier, messages, grammar constraints; `InferenceResponse` includes cost, token counts, provider name, and finish reason. Phase 6 provides a real implementation of `InferenceService` via the `inference.Broker`.
+- **Service interfaces** (`internal/engine/interfaces.go`) — Abstractions for `GitService`, `ContainerService`, `InferenceService`, `IndexService`, and `ModelService` so orchestration logic is testable without real Docker or network calls. Tests use noop implementations. `InferenceRequest` includes fields for run/task/attempt tracking, model tier, messages, grammar constraints; `InferenceResponse` includes cost, token counts, provider name, and finish reason. Phase 6 provides a real implementation of `InferenceService` via the `inference.Broker`. Phase 8 expanded `IndexService` from a single `Index()` method to a full typed query API with 7 methods (see [Semantic Indexer Reference](semantic-indexer.md)).
 
 - **Engine runtime** (`internal/engine/engine.go`) — Long-lived `Engine` struct that wires config, database, event bus, and service interfaces. Provides `Start()`/`Stop()` lifecycle, background worker pool, and accessor methods (`Bus()`, `DB()`, `Config()`, `RootDir()`). The `emitEvent()` helper logs errors from event persistence without blocking the calling operation.
 

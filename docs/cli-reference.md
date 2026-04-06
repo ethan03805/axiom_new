@@ -162,10 +162,18 @@ These commands are defined in the architecture and will be implemented in later 
 | `axiom tunnel start` | 16 | Start Cloudflare tunnel |
 | `axiom tunnel stop` | 16 | Stop tunnel |
 
+### Index Commands (service layer ready — Phase 8; CLI wiring in Phase 14)
+| Command | Service Status | Description |
+|---------|---------------|-------------|
+| `axiom index refresh` | `Indexer.Index(ctx, dir)` | Full project re-index |
+| `axiom index query --type lookup_symbol --name <name>` | `Indexer.LookupSymbol(ctx, name, kind)` | Find symbols by name |
+| `axiom index query --type reverse_dependencies --name <name>` | `Indexer.ReverseDependencies(ctx, name)` | Find references to a symbol |
+| `axiom index query --type list_exports --package <path>` | `Indexer.ListExports(ctx, path)` | List package exports |
+| `axiom index query --type find_implementations --name <name>` | `Indexer.FindImplementations(ctx, name)` | Find interface implementations |
+| `axiom index query --type module_graph` | `Indexer.ModuleGraph(ctx, root)` | Show package dependency graph |
+
 ### Utility Commands
 | Command | Phase | Description |
 |---------|-------|-------------|
 | `axiom doctor` | 19 | System health check |
 | `axiom skill generate --runtime <rt>` | 17 | Generate skill file |
-| `axiom index refresh` | 8 | Force re-index |
-| `axiom index query --type <type>` | 8 | Query semantic index |

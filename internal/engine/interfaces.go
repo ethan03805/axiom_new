@@ -72,8 +72,62 @@ type InferenceService interface {
 }
 
 // IndexService abstracts semantic indexing for testability.
+// Per Architecture Section 17, the indexer maintains a structured index
+// of project code symbols, exports, and dependency relationships.
 type IndexService interface {
+	// Index performs a full project index.
 	Index(ctx context.Context, dir string) error
+	// IndexFiles performs incremental indexing of specific files.
+	IndexFiles(ctx context.Context, dir string, paths []string) error
+	// LookupSymbol finds symbols by name, optionally filtered by kind.
+	LookupSymbol(ctx context.Context, name, kind string) ([]SymbolResult, error)
+	// ReverseDependencies returns files/symbols that reference the given symbol.
+	ReverseDependencies(ctx context.Context, symbolName string) ([]ReferenceResult, error)
+	// ListExports returns all exported symbols for a package directory.
+	ListExports(ctx context.Context, packagePath string) ([]SymbolResult, error)
+	// FindImplementations returns types implementing the given interface.
+	FindImplementations(ctx context.Context, interfaceName string) ([]ReferenceResult, error)
+	// ModuleGraph returns the package dependency graph.
+	ModuleGraph(ctx context.Context, rootPackage string) (*ModuleGraphResult, error)
+}
+
+// SymbolResult represents a symbol found in the index.
+// Per Architecture Section 17.5.
+type SymbolResult struct {
+	Name      string
+	Kind      string // function, type, interface, constant, variable, field, method
+	FilePath  string
+	Line      int
+	Signature string
+	Exported  bool
+}
+
+// ReferenceResult represents a reference to a symbol.
+// Per Architecture Section 17.5.
+type ReferenceResult struct {
+	FilePath   string
+	Line       int
+	SymbolName string
+	UsageType  string // call, reference, implementation
+}
+
+// ModuleGraphResult holds the package dependency graph.
+// Per Architecture Section 17.5.
+type ModuleGraphResult struct {
+	Packages []PackageNode
+	Edges    []PackageEdge
+}
+
+// PackageNode represents a package in the dependency graph.
+type PackageNode struct {
+	Path string
+	Dir  string
+}
+
+// PackageEdge represents a dependency edge between packages.
+type PackageEdge struct {
+	From string
+	To   string
 }
 
 // ModelService abstracts model registry operations for testability.

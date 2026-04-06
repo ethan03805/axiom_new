@@ -447,6 +447,73 @@ type UIInputHistory struct {
 	CreatedAt time.Time
 }
 
+// --- Semantic index types (Section 17.3) ---
+
+type SymbolKind string
+
+const (
+	SymbolFunction  SymbolKind = "function"
+	SymbolType      SymbolKind = "type"
+	SymbolInterface SymbolKind = "interface"
+	SymbolConstant  SymbolKind = "constant"
+	SymbolVariable  SymbolKind = "variable"
+	SymbolField     SymbolKind = "field"
+	SymbolMethod    SymbolKind = "method"
+)
+
+type UsageType string
+
+const (
+	UsageCall           UsageType = "call"
+	UsageReference      UsageType = "reference"
+	UsageImplementation UsageType = "implementation"
+)
+
+type IndexFile struct {
+	ID        int64
+	Path      string
+	Language  string
+	Hash      string
+	IndexedAt time.Time
+}
+
+type IndexSymbol struct {
+	ID             int64
+	FileID         int64
+	Name           string
+	Kind           SymbolKind
+	Line           int
+	Signature      *string
+	ReturnType     *string
+	Exported       bool
+	ParentSymbolID *int64
+	// Joined field — populated by some queries
+	FilePath string
+}
+
+type IndexImport struct {
+	ID         int64
+	FileID     int64
+	ImportPath string
+	Alias      *string
+}
+
+type IndexReference struct {
+	ID         int64
+	FileID     int64
+	SymbolName string
+	Line       int
+	UsageType  UsageType
+	// Joined field — populated by some queries
+	FilePath string
+}
+
+type IndexPackage struct {
+	ID   int64
+	Path string
+	Dir  string
+}
+
 // --- Transactional helper ---
 
 // WithTx runs fn inside a database transaction, committing on success

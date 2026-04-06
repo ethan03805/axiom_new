@@ -105,7 +105,25 @@ func (n *noopInferenceService) Infer(ctx context.Context, req InferenceRequest) 
 
 type noopIndexService struct{}
 
-func (n *noopIndexService) Index(ctx context.Context, dir string) error { return nil }
+func (n *noopIndexService) Index(ctx context.Context, dir string) error          { return nil }
+func (n *noopIndexService) IndexFiles(ctx context.Context, dir string, paths []string) error {
+	return nil
+}
+func (n *noopIndexService) LookupSymbol(ctx context.Context, name, kind string) ([]SymbolResult, error) {
+	return nil, nil
+}
+func (n *noopIndexService) ReverseDependencies(ctx context.Context, symbolName string) ([]ReferenceResult, error) {
+	return nil, nil
+}
+func (n *noopIndexService) ListExports(ctx context.Context, packagePath string) ([]SymbolResult, error) {
+	return nil, nil
+}
+func (n *noopIndexService) FindImplementations(ctx context.Context, interfaceName string) ([]ReferenceResult, error) {
+	return nil, nil
+}
+func (n *noopIndexService) ModuleGraph(ctx context.Context, rootPackage string) (*ModuleGraphResult, error) {
+	return nil, nil
+}
 
 // --- Engine constructor tests ---
 

@@ -26,6 +26,7 @@ Current migrations:
 - `001_initial_schema.sql` — full schema from Architecture Section 15.2
 - `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` (Phase 5)
 - `003_model_registry.sql` — adds `model_registry` table for model catalog (Phase 7)
+- `004_semantic_index.sql` — adds semantic index tables for symbol/export/dependency tracking (Phase 8)
 
 ## Table Reference
 
@@ -346,6 +347,72 @@ Aggregated model catalog from OpenRouter, BitNet, and shipped capability data. P
 | `avg_cost_per_task` | REAL | | Average cost in USD |
 | `last_updated` | DATETIME | NOT NULL DEFAULT CURRENT_TIMESTAMP | Last refresh time |
 
+### Semantic Index (Phase 8)
+
+#### `index_files`
+Tracked source files with content hashes for incremental reindexing. Per Architecture Section 17.3.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| `path` | TEXT | NOT NULL UNIQUE | Relative path from project root |
+| `language` | TEXT | NOT NULL | go, typescript, javascript, python, rust |
+| `hash` | TEXT | NOT NULL | SHA-256 of file content |
+| `indexed_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP | Last indexing time |
+
+#### `index_symbols`
+Symbols: functions, types, interfaces, constants, variables, fields, methods.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| `file_id` | INTEGER | FK → index_files ON DELETE CASCADE | |
+| `name` | TEXT | NOT NULL | Symbol name |
+| `kind` | TEXT | NOT NULL, CHECK | function, type, interface, constant, variable, field, method |
+| `line` | INTEGER | NOT NULL | Source line number |
+| `signature` | TEXT | | Function signature |
+| `return_type` | TEXT | | Return type for functions |
+| `exported` | INTEGER | NOT NULL DEFAULT 0 | Boolean: publicly exported |
+| `parent_symbol_id` | INTEGER | FK → index_symbols ON DELETE CASCADE | For methods/fields of a type |
+
+#### `index_imports`
+Import declarations per file.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| `file_id` | INTEGER | FK → index_files ON DELETE CASCADE | |
+| `import_path` | TEXT | NOT NULL | Imported package/module path |
+| `alias` | TEXT | | Import alias if any |
+
+#### `index_references`
+Symbol references for reverse-dependency queries.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| `file_id` | INTEGER | FK → index_files ON DELETE CASCADE | |
+| `symbol_name` | TEXT | NOT NULL | Referenced symbol name |
+| `line` | INTEGER | NOT NULL | Source line of reference |
+| `usage_type` | TEXT | NOT NULL, CHECK | call, reference, implementation |
+
+#### `index_packages`
+Package/module identity for dependency graph.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| `path` | TEXT | NOT NULL UNIQUE | Package/module path |
+| `dir` | TEXT | NOT NULL | Directory on disk |
+
+#### `index_package_deps`
+Package dependency edges.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `package_id` | INTEGER | FK → index_packages ON DELETE CASCADE, PK | |
+| `depends_on_id` | INTEGER | FK → index_packages ON DELETE CASCADE, PK | |
+
 ## Indexes
 
 ```sql
@@ -363,6 +430,16 @@ CREATE INDEX idx_ui_messages_session ON ui_messages(session_id);
 CREATE INDEX idx_model_registry_tier ON model_registry(tier);
 CREATE INDEX idx_model_registry_family ON model_registry(family);
 CREATE INDEX idx_model_registry_source ON model_registry(source);
+CREATE INDEX idx_index_symbols_name ON index_symbols(name);
+CREATE INDEX idx_index_symbols_kind ON index_symbols(kind);
+CREATE INDEX idx_index_symbols_file ON index_symbols(file_id);
+CREATE INDEX idx_index_symbols_parent ON index_symbols(parent_symbol_id);
+CREATE INDEX idx_index_imports_file ON index_imports(file_id);
+CREATE INDEX idx_index_imports_path ON index_imports(import_path);
+CREATE INDEX idx_index_refs_symbol ON index_references(symbol_name);
+CREATE INDEX idx_index_refs_file ON index_references(file_id);
+CREATE INDEX idx_index_files_path ON index_files(path);
+CREATE INDEX idx_index_packages_path ON index_packages(path);
 ```
 
 ## Repository API
@@ -384,6 +461,8 @@ Every table has a corresponding Go struct in `internal/state/models.go`. Typed s
 | `TaskType` | `implementation`, `test`, `review` |
 | `ContainerType` | `meeseeks`, `reviewer`, `validator`, `sub_orchestrator` |
 | `SessionMode` | `bootstrap`, `approval`, `execution`, `postrun` |
+| `SymbolKind` | `function`, `type`, `interface`, `constant`, `variable`, `field`, `method` |
+| `UsageType` | `call`, `reference`, `implementation` |
 
 ### Status Transition Invariants
 
@@ -440,6 +519,9 @@ failed → queued   (retry or escalation per Section 15.4)
 **Model Registry** (`model_registry.go`):
 `UpsertModel`, `GetModel`, `ListModels`, `ListModelsByTier`, `ListModelsByFamily`, `ListModelsByTierAndFamily`, `DeleteModel`, `DeleteModelsBySource`, `ModelCountByTier`, `UpdateModelPerformance`
 
+**Semantic Index** (`index.go`):
+`CreateIndexFile`, `GetIndexFile`, `DeleteIndexFile`, `UpdateIndexFileHash`, `ListIndexFiles`, `ClearIndex`, `CreateIndexSymbol`, `ListSymbolsByFile`, `LookupSymbol`, `ListExportedSymbolsByPackageDir`, `FindImplementations`, `CreateIndexImport`, `ListImportsByFile`, `ListImporterFiles`, `CreateIndexReference`, `ListReferencesBySymbol`, `CreateIndexPackage`, `GetIndexPackage`, `AddPackageDep`, `ListPackageDeps`
+
 ### Sentinel Errors
 
 | Error | Meaning |
@@ -470,4 +552,9 @@ ui_sessions 1──* ui_messages
 ui_sessions 1──* ui_session_summaries
 projects 1──* ui_input_history
 model_registry            (standalone — no FK relationships)
+index_files 1──* index_symbols
+index_files 1──* index_imports
+index_files 1──* index_references
+index_symbols 0..1──* index_symbols (parent_symbol_id self-reference)
+index_packages *──* index_package_deps (self-referencing)
 ```
