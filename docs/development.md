@@ -16,6 +16,7 @@ axiom/
 │   │   ├── run.go          # Run lifecycle (CreateRun, PauseRun, ResumeRun, CancelRun, CompleteRun, FailRun)
 │   │   ├── srs.go          # SRS lifecycle (SubmitSRS, ApproveSRS, RejectSRS) (Phase 9)
 │   │   ├── eco.go          # ECO lifecycle (ProposeECO, ApproveECO, RejectECO) (Phase 9)
+│   │   ├── scheduler.go    # Scheduler worker loop + engine adapters (engineModelSelector, engineSnapshotProvider) (Phase 10)
 │   │   ├── status.go       # Status projections (RunStatusProjection, TaskSummary, BudgetSummary)
 │   │   └── worker.go       # Background worker pool (register, start, stop periodic workers)
 │   ├── events/             # Central event bus (Phase 3)
@@ -85,6 +86,12 @@ axiom/
 │   ├── eco/                # ECO validation, category enforcement, file persistence (Phase 9)
 │   │   └── eco.go          # ValidCategory, ValidateProposal, WriteECOFile, ListECOFiles, formatECOMarkdown
 │   │
+│   ├── task/               # Task service: creation, batch, cycle detection, retry/escalation/blocking (Phase 10)
+│   │   └── service.go      # Service, CreateTask, CreateBatch, HandleTaskFailure, RetryTask, EscalateTask, BlockTask, RequestScopeExpansion
+│   │
+│   ├── scheduler/          # Execution scheduler: dispatch loop, lock acquisition, waiter processing (Phase 10)
+│   │   └── scheduler.go    # Scheduler, Tick, ReleaseLocks, ModelSelector/SnapshotProvider interfaces, sortLockRequests
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
@@ -95,10 +102,8 @@ axiom/
 │   ├── mergequeue/         # Serialized merge queue
 │   ├── orchestrator/       # Orchestrator lifecycle management
 │   ├── review/             # Review pipeline
-│   ├── scheduler/          # Task scheduler and lock manager
 │   ├── security/           # Secret scanning, prompt safety, redaction
 │   ├── session/            # Session UX manager
-│   ├── task/               # Task system and state transitions
 │   ├── tui/                # Bubble Tea terminal UI
 │   └── validation/         # Validation sandbox management
 ├── migrations/             # (Legacy location — migrations are now embedded)
@@ -176,6 +181,7 @@ The database is built through sequential migrations:
 - `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` for independent container lifecycle management (Phase 5)
 - `003_model_registry.sql` — adds `model_registry` table for model catalog with tier, family, and source indexes (Phase 7)
 - `004_semantic_index.sql` — adds 6 semantic index tables (`index_files`, `index_symbols`, `index_imports`, `index_references`, `index_packages`, `index_package_deps`) with 11 performance indexes (Phase 8)
+- `005_attempt_tier.sql` — adds `tier` column to `task_attempts` for per-tier retry counting (Phase 10)
 
 All tables have corresponding repository methods in the `state` package (see [Database Schema Reference](database-schema.md) for the full repository API):
 
@@ -245,6 +251,8 @@ Current test coverage by package:
 | `internal/models` | 19 | Shipped loader (3), OpenRouter fetcher (2), BitNet scanner (2), registry service (7), merge enrichment (1), combined filtering (1), broker maps (1), performance preservation (1), adapter (1) |
 | `internal/bitnet` | 11 | Service creation (1), status up/down (2), model listing (2), enabled/disabled (1), base URL (1), start/stop guards (2), weight dir (1), status fields (1) |
 | `internal/index` | 24 | Full indexing (3), incremental indexing (2), exclusion rules (2), lookup_symbol (6), reverse_dependencies (1), list_exports (2), find_implementations (1), module_graph (2), multi-language (4), edge cases (3) |
+| `internal/task` | 24 | Single creation (5), batch creation (7), retry (2), escalation (3), blocking (1), HandleTaskFailure routing (3), scope expansion (2), per-tier counting (1) |
+| `internal/scheduler` | 15 | Dispatch ready tasks (3), lock acquisition (2), lock conflicts (2), concurrency limits (2), lock waiter processing (2), lock ordering (1), edge cases (3) |
 
 ### Test Patterns
 
@@ -289,7 +297,39 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 7 | Model Registry and BitNet Operations | Complete |
 | 8 | Semantic Indexer and Typed Query API | Complete |
 | 9 | SRS, ECO, and Bootstrap-Mode Workflow | Complete |
-| 10-20 | Remaining phases | Not started |
+| 10 | Task System, Scheduler, and Locking | Complete |
+| 11-20 | Remaining phases | Not started |
+
+### Phase 10 Summary
+
+Phase 10 implemented the task system, execution scheduler, and write-set locking per Architecture Sections 15, 16, 22, and 30:
+
+- **Task service** (`task/service.go`) — `Service` struct with `CreateTask` (single, transactional), `CreateBatch` (batch with DFS cycle detection), `HandleTaskFailure` (routes to retry/escalate/block based on attempt history), `RetryTask` (requeue at same tier), `EscalateTask` (bump to next tier: local→cheap→standard→premium), `BlockTask` (mark as requiring orchestrator intervention), and `RequestScopeExpansion` (atomic lock acquisition for additional files or move to `waiting_on_lock`).
+
+- **Cycle detection** — DFS with three-color marking (white/gray/black) over the batch dependency graph. Detects direct cycles, transitive cycles, and self-dependencies. Dependencies referencing already-persisted tasks are checked for existence but not traversed (cycle-free by induction).
+
+- **Retry/escalation/blocking** — Per Architecture Section 30.1: `MaxRetriesPerTier = 3` (attempts counted per tier using the `task_attempts.tier` column), `MaxEscalations = 2` (counted as distinct tiers in attempt history minus one). Tier chain: `local → cheap → standard → premium`. After exhaustion: `failed → blocked` (direct state transition).
+
+- **Scheduler** (`scheduler/scheduler.go`) — `Scheduler` struct with `Tick` (periodic dispatch across all active runs), `ReleaseLocks` (release + process waiters). Tick loop: count in-progress tasks, find queued tasks with all deps done, acquire lock sets atomically in deterministic order, dispatch up to `MaxMeeseeks` concurrency limit.
+
+- **Lock acquisition** — Per Architecture Section 16.3: locks sorted by `(resource_type, resource_key)` for deadlock prevention, acquired in a single database transaction (all-or-nothing). On conflict the transaction rolls back — no partial locks. Conflicting tasks move to `waiting_on_lock` with a `task_lock_waits` record.
+
+- **Lock waiter processing** — On lock release, all `waiting_on_lock` tasks are scanned. If a waiter's requested resources are all free, it transitions `waiting_on_lock → queued` and the lock wait record is removed.
+
+- **Dispatch** — Selects a model via `ModelSelector` interface, captures current HEAD via `SnapshotProvider` for base_snapshot pinning (Section 16.2), computes attempt number, transitions `queued → in_progress`, creates `task_attempts` record with `status = running`, `phase = executing`, and the task's current tier.
+
+- **Engine integration** (`engine/scheduler.go`) — Scheduler registered as a 500ms background worker. `engineModelSelector` adapts `ModelService.List()` to `scheduler.ModelSelector`. `engineSnapshotProvider` adapts `GitService.CurrentHEAD()` to `scheduler.SnapshotProvider`.
+
+- **Schema evolution** (`migrations/005_attempt_tier.sql`) — Adds `tier TEXT NOT NULL DEFAULT 'standard'` column to `task_attempts` for per-tier retry counting.
+
+- **State transition additions** — `in_progress → waiting_on_lock` (scope expansion conflict) and `failed → blocked` (retry/escalation exhaustion) added to `validTaskTransitions`.
+
+- **Known deferred items:**
+  - Actual container spawning on dispatch (Phase 11+ — the scheduler creates the attempt record but does not start containers)
+  - Cross-batch cycle detection (only within-batch cycles are detected; cross-batch cycles prevented by topological ordering in practice)
+  - Context invalidation warnings for active Meeseeks (Architecture Section 16.5 — optional optimization)
+
+See [Task System, Scheduler, and Locking Reference](task-scheduler.md) for the full API.
 
 ### Phase 9 Summary
 

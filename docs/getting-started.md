@@ -147,12 +147,22 @@ Before autonomous execution begins, the orchestrator generates a Software Requir
 
 See [SRS and ECO Reference](srs-eco.md) for the full API and lifecycle details.
 
+## Task System and Scheduling
+
+After the SRS is approved and the run becomes active, the orchestrator decomposes the SRS into a task tree. The engine's task system and scheduler handle:
+
+- **Task creation** with dependency validation and cycle detection
+- **Concurrent execution** with write-set locking (file, package, module, or schema scope)
+- **Automatic retry** (up to 3 times per tier) and **escalation** (up to 2 tier bumps: local → cheap → standard → premium)
+- **Lock conflict resolution** — tasks that need locked resources wait and are automatically requeued when locks are released
+
+See [Task System, Scheduler, and Locking Reference](task-scheduler.md) for details.
+
 ## What's Next
 
 The following features are implemented in later phases:
 
 - `axiom run "<prompt>"` — CLI command to start a run (Phase 14; engine SRS flow available since Phase 9)
-- Task decomposition and scheduling (Phase 10)
 - Manifest validation and review pipeline (Phase 11)
 - Merge queue (Phase 12)
 - `axiom tui` — interactive terminal UI (Phase 15)

@@ -27,6 +27,7 @@ Current migrations:
 - `002_relax_container_session_fks.sql` — relaxes FK constraints on `container_sessions` (Phase 5)
 - `003_model_registry.sql` — adds `model_registry` table for model catalog (Phase 7)
 - `004_semantic_index.sql` — adds semantic index tables for symbol/export/dependency tracking (Phase 8)
+- `005_attempt_tier.sql` — adds `tier` column to `task_attempts` for per-tier retry counting (Phase 10)
 
 ## Table Reference
 
@@ -123,6 +124,7 @@ Individual execution attempts preserving retry history.
 | `attempt_number` | INTEGER | NOT NULL | Attempt sequence number |
 | `model_id` | TEXT | NOT NULL | Model used for this attempt |
 | `model_family` | TEXT | NOT NULL | anthropic, openai, meta, local |
+| `tier` | TEXT | NOT NULL DEFAULT 'standard' | Model tier at dispatch time (local, cheap, standard, premium). Used for per-tier retry counting. Added in migration 005. |
 | `base_snapshot` | TEXT | NOT NULL | Git SHA for this attempt |
 | `status` | TEXT | NOT NULL | running, passed, failed, escalated |
 | `phase` | TEXT | NOT NULL DEFAULT 'executing' | executing, validating, reviewing, awaiting_orchestrator_gate, queued_for_merge, merging, succeeded, failed, escalated |

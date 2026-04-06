@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/events"
+	"github.com/openaxiom/axiom/internal/scheduler"
 	"github.com/openaxiom/axiom/internal/state"
 )
 
@@ -40,6 +42,7 @@ type Engine struct {
 	index     IndexService
 	models    ModelService
 
+	sched   *scheduler.Scheduler
 	workers *WorkerPool
 
 	mu      sync.Mutex
@@ -65,7 +68,7 @@ func New(opts Options) (*Engine, error) {
 
 	bus := events.New(opts.DB, opts.Log)
 
-	return &Engine{
+	e := &Engine{
 		cfg:       opts.Config,
 		db:        opts.DB,
 		bus:       bus,
@@ -76,7 +79,18 @@ func New(opts Options) (*Engine, error) {
 		inference: opts.Inference,
 		index:     opts.Index,
 		models:    opts.Models,
-	}, nil
+	}
+
+	// Create scheduler with engine-provided adapters
+	e.sched = scheduler.New(scheduler.Options{
+		DB:               opts.DB,
+		Log:              opts.Log,
+		MaxMeeseeks:      opts.Config.Concurrency.MaxMeeseeks,
+		ModelSelector:    &engineModelSelector{models: opts.Models},
+		SnapshotProvider: &engineSnapshotProvider{git: opts.Git, rootDir: opts.RootDir},
+	})
+
+	return e, nil
 }
 
 // Start begins background worker loops (scheduler, merge queue, cleanup).
@@ -91,8 +105,8 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	e.workers = NewWorkerPool(e.ctx, e.log)
 
-	// Future phases will register workers here:
-	// e.workers.Register("scheduler", e.schedulerLoop, 500*time.Millisecond)
+	e.workers.Register("scheduler", e.schedulerLoop, 500*time.Millisecond)
+	// Future phases will register additional workers:
 	// e.workers.Register("merge-queue", e.mergeQueueLoop, 500*time.Millisecond)
 	// e.workers.Register("cleanup", e.cleanupLoop, 30*time.Second)
 

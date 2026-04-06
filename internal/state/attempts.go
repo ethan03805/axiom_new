@@ -6,12 +6,17 @@ import (
 )
 
 // CreateAttempt inserts a new task attempt and returns its auto-generated ID.
+// If Tier is not set, it defaults to TierStandard (matching the DB schema default).
 func (d *DB) CreateAttempt(a *TaskAttempt) (int64, error) {
+	tier := a.Tier
+	if tier == "" {
+		tier = TierStandard
+	}
 	res, err := d.Exec(`INSERT INTO task_attempts
-		(task_id, attempt_number, model_id, model_family, base_snapshot, status, phase,
+		(task_id, attempt_number, model_id, model_family, tier, base_snapshot, status, phase,
 		 input_tokens, output_tokens, cost_usd, failure_reason, feedback)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.TaskID, a.AttemptNumber, a.ModelID, a.ModelFamily, a.BaseSnapshot,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.TaskID, a.AttemptNumber, a.ModelID, a.ModelFamily, string(tier), a.BaseSnapshot,
 		string(a.Status), string(a.Phase),
 		a.InputTokens, a.OutputTokens, a.CostUSD, a.FailureReason, a.Feedback)
 	if err != nil {
@@ -22,7 +27,7 @@ func (d *DB) CreateAttempt(a *TaskAttempt) (int64, error) {
 
 // GetAttempt retrieves a task attempt by ID.
 func (d *DB) GetAttempt(id int64) (*TaskAttempt, error) {
-	row := d.QueryRow(`SELECT id, task_id, attempt_number, model_id, model_family,
+	row := d.QueryRow(`SELECT id, task_id, attempt_number, model_id, model_family, tier,
 		base_snapshot, status, phase, input_tokens, output_tokens, cost_usd,
 		failure_reason, feedback, started_at, completed_at
 		FROM task_attempts WHERE id = ?`, id)
@@ -31,7 +36,7 @@ func (d *DB) GetAttempt(id int64) (*TaskAttempt, error) {
 
 // ListAttemptsByTask returns all attempts for a task ordered by attempt number.
 func (d *DB) ListAttemptsByTask(taskID string) ([]TaskAttempt, error) {
-	rows, err := d.Query(`SELECT id, task_id, attempt_number, model_id, model_family,
+	rows, err := d.Query(`SELECT id, task_id, attempt_number, model_id, model_family, tier,
 		base_snapshot, status, phase, input_tokens, output_tokens, cost_usd,
 		failure_reason, feedback, started_at, completed_at
 		FROM task_attempts WHERE task_id = ? ORDER BY attempt_number`, taskID)
@@ -225,11 +230,11 @@ func (d *DB) ListArtifacts(attemptID int64) ([]TaskArtifact, error) {
 
 func scanAttempt(row *sql.Row) (*TaskAttempt, error) {
 	var a TaskAttempt
-	var status, phase string
+	var status, phase, tier string
 	var startedAt string
 	var completedAt *string
 
-	err := row.Scan(&a.ID, &a.TaskID, &a.AttemptNumber, &a.ModelID, &a.ModelFamily,
+	err := row.Scan(&a.ID, &a.TaskID, &a.AttemptNumber, &a.ModelID, &a.ModelFamily, &tier,
 		&a.BaseSnapshot, &status, &phase, &a.InputTokens, &a.OutputTokens, &a.CostUSD,
 		&a.FailureReason, &a.Feedback, &startedAt, &completedAt)
 	if err == sql.ErrNoRows {
@@ -239,6 +244,7 @@ func scanAttempt(row *sql.Row) (*TaskAttempt, error) {
 		return nil, fmt.Errorf("scanning attempt: %w", err)
 	}
 
+	a.Tier = TaskTier(tier)
 	a.Status = AttemptStatus(status)
 	a.Phase = AttemptPhase(phase)
 	a.StartedAt = parseTime(startedAt)
@@ -248,17 +254,18 @@ func scanAttempt(row *sql.Row) (*TaskAttempt, error) {
 
 func scanAttemptRow(rows *sql.Rows) (*TaskAttempt, error) {
 	var a TaskAttempt
-	var status, phase string
+	var status, phase, tier string
 	var startedAt string
 	var completedAt *string
 
-	err := rows.Scan(&a.ID, &a.TaskID, &a.AttemptNumber, &a.ModelID, &a.ModelFamily,
+	err := rows.Scan(&a.ID, &a.TaskID, &a.AttemptNumber, &a.ModelID, &a.ModelFamily, &tier,
 		&a.BaseSnapshot, &status, &phase, &a.InputTokens, &a.OutputTokens, &a.CostUSD,
 		&a.FailureReason, &a.Feedback, &startedAt, &completedAt)
 	if err != nil {
 		return nil, fmt.Errorf("scanning attempt row: %w", err)
 	}
 
+	a.Tier = TaskTier(tier)
 	a.Status = AttemptStatus(status)
 	a.Phase = AttemptPhase(phase)
 	a.StartedAt = parseTime(startedAt)

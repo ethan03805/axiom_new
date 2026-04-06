@@ -64,8 +64,8 @@ const (
 var validTaskTransitions = map[TaskStatus][]TaskStatus{
 	TaskQueued:        {TaskInProgress, TaskWaitingOnLock, TaskCancelledECO},
 	TaskWaitingOnLock: {TaskInProgress, TaskQueued, TaskCancelledECO},
-	TaskInProgress:    {TaskDone, TaskFailed, TaskBlocked, TaskCancelledECO},
-	TaskFailed:        {TaskQueued}, // retry or escalation (Section 15.4)
+	TaskInProgress:    {TaskDone, TaskFailed, TaskBlocked, TaskWaitingOnLock, TaskCancelledECO},
+	TaskFailed:        {TaskQueued, TaskBlocked}, // retry/escalation or block after exhaustion (Section 15.4, 30.1)
 }
 
 func ValidTaskTransition(from, to TaskStatus) bool {
@@ -310,6 +310,7 @@ type TaskAttempt struct {
 	AttemptNumber int
 	ModelID       string
 	ModelFamily   string
+	Tier          TaskTier
 	BaseSnapshot  string
 	Status        AttemptStatus
 	Phase         AttemptPhase
