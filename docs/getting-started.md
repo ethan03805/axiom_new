@@ -107,6 +107,8 @@ axiom skill generate --runtime codex
 
 This writes runtime-specific instruction files into the repository so the orchestrator is taught to route work through Axiom instead of directly implementing the task itself.
 
+Current operating model: Axiom does not auto-launch an embedded orchestrator. After `axiom run`, you appoint and launch a Claw, Claude Code, Codex, or OpenCode runtime yourself and point it at the repo and/or API; that external orchestrator owns prompt-to-SRS generation for now.
+
 Re-run the command after changing `.axiom/config.toml`, especially `[api].port`, `[budget]`, `[git].branch_prefix`, or the selected orchestrator runtime.
 
 See [Runtime Skill System Reference](runtime-skills.md) for the generated files and per-runtime behavior.
@@ -187,9 +189,13 @@ See [IPC & Container Lifecycle Reference](ipc-container.md) for details.
 
 Before autonomous execution begins, the orchestrator generates a Software Requirements Specification (SRS) that must be approved. The SRS is the immutable scope contract for the run.
 
+Current operating model: the initial SRS must come from a user-appointed external orchestrator. Axiom does not auto-bootstrap or auto-launch one in live app flows today.
+
 **SRS flow:** The orchestrator generates an SRS draft → the engine validates its structure → the user reviews and approves or rejects → on approval, the SRS is written as a read-only file with SHA-256 integrity verification → the run transitions to active.
 
 **ECO flow:** If environmental issues arise during execution (broken dependencies, API changes), the orchestrator proposes an Engineering Change Order (ECO). ECOs are strictly limited to 6 categories (dependency, API, security, platform, license, provider). ECOs are recorded as append-only markdown files under `.axiom/eco/` and never modify the original SRS.
+
+Current implementation note: `axiom run` creates the run in `draft_srs`, but it does not auto-generate the SRS. The prompt handoff and submit-SRS path are still being completed, so do not expect the engine to bootstrap the first draft by itself.
 
 See [SRS and ECO Reference](srs-eco.md) for the full API and lifecycle details.
 
@@ -258,14 +264,16 @@ After initialization, the full CLI surface is available. See [CLI Reference](cli
 ### Project Lifecycle
 
 ```bash
-axiom run "Build a REST API with auth"        # Start a new run
-axiom run --budget 25 "Build a REST API"       # Start with specific budget
+axiom run "Build a REST API with auth"        # Create a run for external-orchestrator handoff
+axiom run --budget 25 "Build a REST API"       # Same, with a specific budget ceiling
 axiom status                                   # Show project status
 axiom pause                                    # Pause execution
 axiom resume                                   # Resume paused execution
 axiom cancel                                   # Cancel execution
 axiom export                                   # Export project state as JSON
 ```
+
+Current workflow note: after `axiom run`, use your appointed external orchestrator to generate and submit the SRS draft. The CLI does not perform embedded bootstrap.
 
 ### Model Management
 
@@ -375,8 +383,10 @@ axiom api start
 # Starting API server on port 3000...
 ```
 
+This is currently the required orchestration path for SRS generation. You must appoint and launch the orchestrator yourself outside Axiom; Axiom does not auto-launch an embedded orchestrator in normal app flows.
+
 The API provides:
-- **REST endpoints** for project lifecycle (run, pause, resume, cancel), SRS/ECO approval, status queries, task trees, cost breakdown, events, and semantic index queries
+- **REST endpoints** for project lifecycle (run creation / handoff, pause, resume, cancel), SRS/ECO approval, status queries, task trees, cost breakdown, events, and semantic index queries
 - **Event WebSocket** (`ws://localhost:3000/ws/projects/:id`) for real-time project events
 - **Control WebSocket** (`ws://localhost:3000/ws/projects/:id/control`) for external orchestrator action requests with idempotency support
 

@@ -45,8 +45,10 @@ Axiom project initialized in /home/user/my-app
   Config:  /home/user/my-app/.axiom/config.toml
   Branch:  axiom/my-application
 
-Next: run 'axiom run "<prompt>"' to start a project.
+Next: run 'axiom run "<prompt>"' to create a run for your appointed external orchestrator.
 ```
+
+Current operating model: `axiom run` creates the run state, but a user-appointed external orchestrator must generate and submit the first SRS draft.
 
 **Errors:**
 - Fails if `.axiom/` already exists (use a fresh directory)
@@ -135,7 +137,7 @@ ECOs allow controlled environmental changes during execution without modifying t
 
 ### `axiom run "<prompt>"`
 
-Create a new project run record in `draft_srs` status.
+Create a new project run record in `draft_srs` status for external-orchestrator handoff.
 
 ```bash
 axiom run "<prompt>" [--budget <usd>]
@@ -153,11 +155,11 @@ Run created: a1b2c3d4-...
   Status: draft_srs
   Branch: axiom/my-project
   Budget: $10.00
-
-Next: approve the SRS to begin execution.
 ```
 
-**Current implementation note:** the command currently persists the run, budget ceiling, base branch, and target `work_branch`, then emits `run_created`. It does not yet generate the SRS, start task execution, set up the work branch, or reject a dirty working tree automatically. The prompt argument is accepted for CLI compatibility but is not yet consumed by the engine runtime.
+Next step: use your appointed external orchestrator to generate and submit the SRS draft.
+
+**Current implementation note:** the command currently persists the run, budget ceiling, base branch, and target `work_branch`, then emits `run_created`. It does not generate the SRS, start task execution, set up the work branch, or reject a dirty working tree automatically. The near-term model is external-orchestrator handoff, not embedded auto-bootstrap, but the current binary still has stale messaging and does not yet persist the prompt end to end or wire `submit_srs` through the live runtime.
 
 ### `axiom pause`
 

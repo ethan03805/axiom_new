@@ -142,6 +142,7 @@ Invalid configurations produce actionable error messages listing all violations.
 
 - Managed BitNet process control is disabled unless `bitnet.command` is configured. When it is set, Axiom stores managed-process state under `~/.axiom/bitnet/service.json`.
 - `axiom doctor` can load only the global/default config when run outside a project. In that case, project-specific cache checks are skipped.
+- `[orchestrator].runtime` currently names the external runtime you intend to appoint. Axiom does not auto-launch that runtime in live app flows yet.
 
 ## Security Behavior
 

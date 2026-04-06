@@ -8,6 +8,8 @@ This document covers the Software Requirements Specification (SRS) lifecycle and
 
 The SRS is the scope-locking contract that governs an Axiom run. Once a user accepts the SRS, the project scope is immutable. Changes to environmental realities (broken dependencies, API changes) are handled through the ECO process, not scope modifications.
 
+Current operating model: the initial SRS is expected to come from a user-appointed external orchestrator such as Claw, Claude Code, Codex, or OpenCode. Axiom does not auto-launch an embedded orchestrator in normal app flows today.
+
 ### State Machine
 
 ```
@@ -18,7 +20,7 @@ The SRS is the scope-locking contract that governs an Axiom run. Once a user acc
        └──────────────────────────┘
 ```
 
-A run begins in `draft_srs` when created. The orchestrator generates an SRS and submits it via `SubmitSRS()`. The user (or delegated Claw) reviews and either approves or rejects. On rejection, the run returns to `draft_srs` for revision and resubmission.
+A run begins in `draft_srs` when created. In the current operating model, `draft_srs` is the valid waiting state while the appointed external orchestrator prepares the first SRS draft and submits it via `SubmitSRS()`. The user (or delegated Claw) reviews and either approves or rejects. On rejection, the run returns to `draft_srs` for revision and resubmission.
 
 ### SRS Structure Validation
 
@@ -65,6 +67,8 @@ During SRS generation, the orchestrator operates in bootstrap mode with scoped c
 | **Existing project** | User prompt + project configuration + read-only repo-map (file listing). Excludes `.axiom/`, `.git/`, `node_modules/`. |
 
 The `BuildBootstrapContext()` function assembles this context:
+
+Current runtime note: `BuildBootstrapContext()` is the engine-side helper for the bootstrap phase, but the live app does not yet run an embedded bootstrap orchestrator. For now, this context is intended to support the external-orchestrator path.
 
 ```go
 ctx, err := srs.BuildBootstrapContext(projectRoot, isGreenfield)

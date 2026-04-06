@@ -148,7 +148,7 @@ axiom/
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
-│   ├── orchestrator/       # Orchestrator lifecycle management
+│   ├── orchestrator/       # Planned orchestrator integration package (not present yet)
 ├── migrations/             # (Legacy location — migrations are now embedded)
 ├── testdata/               # Test fixture data
 ├── scripts/                # Build and utility scripts
@@ -403,6 +403,7 @@ Phase 20 has started the stabilization and release hardening pass:
 - **Known remaining gaps**
   - The engine's merge-queue adapter still uses a stub integration validator. The `internal/mergequeue/` package is well tested in isolation, but end-to-end runtime wiring to a real validation runner remains outstanding.
   - `engine.CreateRun` persists `work_branch` metadata but does not yet call the git package's `SetupWorkBranch`, so branch checkout and dirty-tree enforcement are not active in the live `axiom run` path.
+  - Axiom currently relies on a user-appointed external orchestrator for initial SRS generation. No embedded orchestrator is wired into live app flows, and the run prompt / `submit_srs` handoff is still incomplete.
   - The test-generation service is implemented, but automatic `CreateTestTask` / `MarkConverged` hooks are still explicit/orchestrator-driven rather than engine-wired.
 
 ### Phase 18 Summary
@@ -426,7 +427,7 @@ Phase 19 now consumes that redacted payload path for prompt-log persistence, kee
 
 ### Phase 16 Summary
 
-Phase 16 implemented the external orchestration API surface per Architecture Section 24, enabling Claw and other orchestrators to control Axiom remotely:
+Phase 16 implemented the external orchestration API surface per Architecture Section 24, enabling Claw and other user-appointed orchestrators to control Axiom remotely. This is also the intended near-term startup model for SRS generation; Axiom does not auto-launch an embedded orchestrator in live app flows:
 
 - **API package** (`api/`) — New `internal/api/` package with 7 source files implementing the full REST + WebSocket API server.
 
@@ -436,7 +437,7 @@ Phase 16 implemented the external orchestration API surface per Architecture Sec
 
 - **REST handlers** (`api/handlers.go`) — All 16 endpoints from Architecture Section 24.2:
   - Project creation: `POST /api/v1/projects`
-  - Run lifecycle: `/run`, `/srs/approve`, `/srs/reject`, `/eco/approve`, `/eco/reject`, `/pause`, `/resume`, `/cancel`
+  - Run lifecycle: `/run` (create run / external handoff), `/srs/approve`, `/srs/reject`, `/eco/approve`, `/eco/reject`, `/pause`, `/resume`, `/cancel`
   - Read endpoints: `/status`, `/tasks`, `/tasks/:tid/attempts`, `/costs`, `/events`, `/models`
   - Semantic index query: `POST /api/v1/index/query` (supports `lookup_symbol`, `reverse_dependencies`, `list_exports`, `find_implementations`)
   - Token management: `GET /api/v1/tokens`, `POST /api/v1/tokens/:id/revoke`
@@ -476,6 +477,7 @@ Phase 16 implemented the external orchestration API surface per Architecture Sec
 - **Known deferred items:**
   - Tunnel URL retrieval: `cloudflared` outputs the public URL to stdout; parsing it requires reading the process output stream (currently returns empty)
   - Long-running control request dispatch: `spawn_meeseeks`, `submit_srs`, etc. return `accepted` immediately; actual orchestration dispatch will be connected in later phases
+  - `POST /run` currently creates run metadata only; prompt persistence and external-orchestrator continuation for the first SRS draft are still being completed
   - Failed auth attempt logging to events table with source IP (currently logged to `api_audit_log` only)
 
 See [API Server Reference](api-server.md) for the full endpoint documentation.
@@ -487,7 +489,7 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
 - **CLI package** (`cli/`) - New `internal/cli/` package with `Commands()` entry point returning all CLI commands for registration. Commands are split into separate files by domain: `run.go` (project lifecycle), `export.go` (JSON export), `models.go` (model registry), `bitnet.go` (BitNet server), `index.go` (semantic indexer), `skill.go` (runtime skill generation), `session.go` (interactive session commands), `doctor.go` (system diagnostics), and `stubs.go` (remaining compatibility placeholders). Shared helpers in `helpers.go` provide `findProjectID` (lookup project by root path), `findActiveRun` (lookup active run for a project), and `openApp` (create App from cwd).
 
 - **Project lifecycle commands** (`cli/run.go`) — Four commands wired to engine methods:
-  - `axiom run "<prompt>" [--budget <usd>]` — creates a project run in `draft_srs` status using `engine.CreateRun`, defaults budget to config value, prints run ID/status/branch/budget
+  - `axiom run "<prompt>" [--budget <usd>]` — creates a project run in `draft_srs` status using `engine.CreateRun`, defaults budget to config value, and prepares the run for a user-appointed external orchestrator to generate the first SRS draft
   - `axiom pause` — finds active run, calls `engine.PauseRun`, prints confirmation
   - `axiom resume` — finds active run, calls `engine.ResumeRun`, prints confirmation
   - `axiom cancel` — finds active run, calls `engine.CancelRun`, prints confirmation
@@ -730,6 +732,7 @@ Phase 9 implemented the SRS approval state machine and ECO lifecycle per Archite
 
 - **Known deferred items:**
   - ~~`axiom run "<prompt>"` CLI command wiring~~ — resolved in Phase 14
+  - Live prompt persistence and external-orchestrator handoff after `axiom run` remain incomplete; the current binary creates run state only
   - ~~SRS approval delegation to Claw~~ — resolved in Phase 16 (API server exposes `/srs/approve` and `/srs/reject` endpoints for external orchestrators)
   - SRS hash verification on engine startup (Phase 19)
   - Full semantic index query access during bootstrap for existing projects (currently provides file listing; full index queries available via `IndexService`)

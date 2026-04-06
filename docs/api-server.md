@@ -27,6 +27,8 @@ axiom skill generate --runtime codex
 
 This ensures the external runtime treats the REST API and control WebSocket as the authoritative Axiom control plane instead of directly implementing the user's request outside Axiom.
 
+Current operating model: this external runtime is required for now. Axiom does not auto-launch an embedded orchestrator or auto-bootstrap the first SRS draft in live app flows.
+
 See [Runtime Skill System Reference](runtime-skills.md) for the generated file set.
 
 ## Authentication
@@ -64,7 +66,7 @@ Authorization: Bearer axm_sk_<token>
 | Method | Endpoint | Scope | Purpose |
 |--------|----------|-------|---------|
 | `POST` | `/api/v1/projects` | full-control | Create a new project |
-| `POST` | `/api/v1/projects/:id/run` | full-control | Submit prompt and start SRS generation |
+| `POST` | `/api/v1/projects/:id/run` | full-control | Create a run for external-orchestrator handoff |
 | `POST` | `/api/v1/projects/:id/srs/approve` | full-control | Approve the generated SRS |
 | `POST` | `/api/v1/projects/:id/srs/reject` | full-control | Reject SRS with feedback |
 | `POST` | `/api/v1/projects/:id/eco/approve` | full-control | Approve an ECO |
@@ -82,6 +84,8 @@ Authorization: Bearer axm_sk_<token>
 | `GET` | `/api/v1/tokens` | full-control | List API tokens |
 | `POST` | `/api/v1/tokens/:id/revoke` | full-control | Revoke a specific token |
 | `GET` | `/health` | none | Health check (no auth required) |
+
+Current runtime note: `POST /api/v1/projects/:id/run` creates run metadata only. Clients should not expect automatic SRS generation from the server; the appointed external orchestrator must handle the first draft.
 
 ## WebSocket Endpoints
 
@@ -124,6 +128,8 @@ Authenticated control channel for external orchestrator action requests. Require
 ```
 
 Supported request types: `submit_srs`, `submit_eco`, `create_task`, `create_task_batch`, `spawn_meeseeks`, `spawn_reviewer`, `spawn_sub_orchestrator`, `approve_output`, `reject_output`, `query_index`, `query_status`, `query_budget`, `request_inference`.
+
+Current runtime note: long-running control requests such as `submit_srs` are part of the intended external orchestration contract, but the live server still only acknowledges those requests rather than dispatching them end to end.
 
 ## Tunnel
 

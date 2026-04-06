@@ -2,6 +2,8 @@
 
 Phase 17 adds deterministic runtime instruction generation for supported orchestrators. The goal is not just to document Axiom, but to make Claude Code, Codex, OpenCode, and Claw behave as Axiom orchestrators instead of silently doing the work outside the engine.
 
+Current operating model: these generated artifacts are how you appoint the orchestrator yourself. Axiom does not auto-launch an embedded orchestrator in normal app flows today.
+
 The implementation lives in:
 
 - `internal/skill/generator.go` - runtime artifact generation
