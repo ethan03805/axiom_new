@@ -38,22 +38,27 @@ func RunCmd(verbose *bool) *cobra.Command {
 	return cmd
 }
 
-// runAction creates a new project run and prints status.
+// runAction starts a new project run via the engine's high-level StartRun entrypoint.
 func runAction(application *app.App, projectID, prompt string, budgetUSD float64, w io.Writer) error {
-	run, err := application.Engine.CreateRun(engine.RunOptions{
+	run, err := application.Engine.StartRun(engine.StartRunOptions{
 		ProjectID:  projectID,
+		Prompt:     prompt,
 		BaseBranch: "main",
 		BudgetUSD:  budgetUSD,
+		Source:     "cli",
 	})
 	if err != nil {
-		return fmt.Errorf("creating run: %w", err)
+		return fmt.Errorf("starting run: %w", err)
 	}
 
 	fmt.Fprintf(w, "Run created: %s\n", run.ID)
 	fmt.Fprintf(w, "  Status: %s\n", run.Status)
 	fmt.Fprintf(w, "  Branch: %s\n", run.WorkBranch)
+	fmt.Fprintf(w, "  Mode:   external orchestrator\n")
 	fmt.Fprintf(w, "  Budget: $%.2f\n", run.BudgetMaxUSD)
-	fmt.Fprintf(w, "\nNext: approve the SRS to begin execution.\n")
+	fmt.Fprintf(w, "  Prompt: %s\n", run.InitialPrompt)
+	fmt.Fprintf(w, "\nWaiting for external orchestrator to submit SRS draft.\n")
+	fmt.Fprintf(w, "Use 'axiom srs show' to view draft status.\n")
 	return nil
 }
 

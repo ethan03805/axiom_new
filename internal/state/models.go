@@ -251,6 +251,8 @@ type ProjectRun struct {
 	BudgetMaxUSD         float64
 	ConfigSnapshot       string
 	SRSHash              *string
+	InitialPrompt        string
+	StartSource          string
 	StartedAt            time.Time
 	PausedAt             *time.Time
 	CancelledAt          *time.Time

@@ -151,7 +151,25 @@ func (h *Handlers) dispatchControlRequest(ctx context.Context, req ControlReques
 		}
 		return ControlResponse{RequestID: req.RequestID, Status: "completed", Result: results}
 
-	case "submit_srs", "submit_eco", "create_task", "create_task_batch",
+	case "submit_srs":
+		content, _ := req.Payload["content"].(string)
+		if content == "" {
+			return ControlResponse{RequestID: req.RequestID, Status: "rejected", Error: "payload.content is required"}
+		}
+		run, err := h.db.GetActiveRun(projectID)
+		if err != nil {
+			return ControlResponse{RequestID: req.RequestID, Status: "rejected", Error: "no active run: " + err.Error()}
+		}
+		if err := h.eng.SubmitSRS(run.ID, content); err != nil {
+			return ControlResponse{RequestID: req.RequestID, Status: "rejected", Error: err.Error()}
+		}
+		return ControlResponse{
+			RequestID: req.RequestID,
+			Status:    "completed",
+			Result:    map[string]string{"status": "awaiting_srs_approval", "run_id": run.ID},
+		}
+
+	case "submit_eco", "create_task", "create_task_batch",
 		"spawn_meeseeks", "spawn_reviewer", "spawn_sub_orchestrator",
 		"approve_output", "reject_output", "request_inference":
 		// Long-running operations: acknowledge immediately.

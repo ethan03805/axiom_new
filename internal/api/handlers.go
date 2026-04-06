@@ -210,6 +210,105 @@ func (h *Handlers) HandleCancel(w http.ResponseWriter, r *http.Request, projectI
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
+// HandleGetSRS returns the current SRS draft or approved SRS content.
+// GET /api/v1/projects/:id/srs
+func (h *Handlers) HandleGetSRS(w http.ResponseWriter, r *http.Request, projectID string) {
+	run, err := h.db.GetActiveRun(projectID)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no active run")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	result := map[string]any{
+		"run_id": run.ID,
+		"status": string(run.Status),
+	}
+
+	if run.InitialPrompt != "" {
+		result["initial_prompt"] = run.InitialPrompt
+	}
+
+	// Try reading the draft
+	draftContent, draftErr := h.eng.ReadSRSDraft(run.ID)
+	if draftErr == nil {
+		result["draft"] = draftContent
+	}
+
+	// If SRS hash is set, the approved SRS exists
+	if run.SRSHash != nil {
+		result["srs_hash"] = *run.SRSHash
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// HandleSRSSubmit accepts an SRS draft submission from an external orchestrator.
+// POST /api/v1/projects/:id/srs/submit
+func (h *Handlers) HandleSRSSubmit(w http.ResponseWriter, r *http.Request, projectID string) {
+	run, err := h.db.GetActiveRun(projectID)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no active run")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var body SRSSubmitRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	if body.Content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	if err := h.eng.SubmitSRS(run.ID, body.Content); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "awaiting_srs_approval",
+		"run_id": run.ID,
+	})
+}
+
+// HandleGetRunHandoff returns the pending run handoff state for an external orchestrator.
+// GET /api/v1/projects/:id/run/handoff
+func (h *Handlers) HandleGetRunHandoff(w http.ResponseWriter, r *http.Request, projectID string) {
+	run, err := h.db.GetActiveRun(projectID)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no active run")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	handoff := map[string]any{
+		"run_id":            run.ID,
+		"project_id":        run.ProjectID,
+		"status":            string(run.Status),
+		"initial_prompt":    run.InitialPrompt,
+		"start_source":      run.StartSource,
+		"orchestrator_mode": run.OrchestratorMode,
+		"base_branch":       run.BaseBranch,
+		"work_branch":       run.WorkBranch,
+		"budget_max_usd":    run.BudgetMaxUSD,
+	}
+
+	writeJSON(w, http.StatusOK, handoff)
+}
+
 // HandleSRSApprove approves the generated SRS.
 // POST /api/v1/projects/:id/srs/approve
 func (h *Handlers) HandleSRSApprove(w http.ResponseWriter, r *http.Request, projectID string) {

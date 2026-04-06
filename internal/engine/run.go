@@ -12,11 +12,83 @@ import (
 	"github.com/google/uuid"
 )
 
-// RunOptions configures a new project run.
+// StartRunOptions configures a new project run via the high-level StartRun entrypoint.
+// This is the intended public API for CLI, API, and WebSocket surfaces.
+type StartRunOptions struct {
+	ProjectID  string
+	Prompt     string
+	BaseBranch string
+	BudgetUSD  float64
+	Source     string // cli, tui, api, control-ws
+}
+
+// RunOptions configures a new project run (low-level helper).
 type RunOptions struct {
 	ProjectID  string
 	BaseBranch string
 	BudgetUSD  float64
+}
+
+// StartRun is the high-level entrypoint for beginning a new project run.
+// It validates workspace preconditions, persists the prompt and handoff
+// metadata, sets up the work branch, and leaves the run in draft_srs
+// awaiting an external orchestrator to submit the initial SRS.
+func (e *Engine) StartRun(opts StartRunOptions) (*state.ProjectRun, error) {
+	if opts.Prompt == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+
+	source := opts.Source
+	if source == "" {
+		source = "cli"
+	}
+
+	// Validate workspace: working tree must be clean
+	if err := e.git.ValidateClean(e.rootDir); err != nil {
+		return nil, fmt.Errorf("workspace not ready: %w", err)
+	}
+
+	// Create the run record via the low-level helper
+	run, err := e.CreateRun(RunOptions{
+		ProjectID:  opts.ProjectID,
+		BaseBranch: opts.BaseBranch,
+		BudgetUSD:  opts.BudgetUSD,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Persist prompt and start source
+	run.InitialPrompt = opts.Prompt
+	run.StartSource = source
+	run.OrchestratorMode = "external"
+	if err := e.db.UpdateRunHandoff(run.ID, opts.Prompt, source, "external"); err != nil {
+		return nil, fmt.Errorf("persisting handoff metadata: %w", err)
+	}
+
+	// Set up work branch
+	if err := e.git.SetupWorkBranch(e.rootDir, run.BaseBranch, run.WorkBranch); err != nil {
+		return nil, fmt.Errorf("setting up work branch: %w", err)
+	}
+
+	e.emitEvent(events.EngineEvent{
+		Type:  events.RunCreated,
+		RunID: run.ID,
+		Details: map[string]any{
+			"prompt":            opts.Prompt,
+			"start_source":     source,
+			"orchestrator_mode": "external",
+			"work_branch":      run.WorkBranch,
+		},
+	})
+
+	e.log.Info("run started (external orchestration)",
+		"run_id", run.ID,
+		"source", source,
+		"branch", run.WorkBranch,
+	)
+
+	return run, nil
 }
 
 // CreateRun creates a new project run in draft_srs status and emits a run_created event.

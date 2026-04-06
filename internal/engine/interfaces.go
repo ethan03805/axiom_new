@@ -9,6 +9,8 @@ type GitService interface {
 	CreateBranch(dir, name string) error
 	CurrentHEAD(dir string) (string, error)
 	IsDirty(dir string) (bool, error)
+	ValidateClean(dir string) error
+	SetupWorkBranch(dir, baseBranch, workBranch string) error
 	AddFiles(dir string, files []string) error
 	Commit(dir string, message string) (string, error)
 	ChangedFilesSince(dir, sinceRef string) ([]string, error)

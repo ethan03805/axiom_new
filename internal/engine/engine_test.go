@@ -85,6 +85,10 @@ func (n *noopGitService) IsDirty(dir string) (bool, error) {
 	return n.dirty, nil
 }
 
+func (n *noopGitService) ValidateClean(dir string) error { return nil }
+
+func (n *noopGitService) SetupWorkBranch(dir, baseBranch, workBranch string) error { return nil }
+
 func (n *noopGitService) AddFiles(dir string, files []string) error { return nil }
 
 func (n *noopGitService) Commit(dir string, message string) (string, error) {

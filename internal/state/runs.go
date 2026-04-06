@@ -10,11 +10,13 @@ func (d *DB) CreateRun(r *ProjectRun) error {
 	_, err := d.Exec(`INSERT INTO project_runs
 		(id, project_id, status, base_branch, work_branch,
 		 orchestrator_mode, orchestrator_runtime, orchestrator_identity,
-		 srs_approval_delegate, budget_max_usd, config_snapshot, srs_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 srs_approval_delegate, budget_max_usd, config_snapshot, srs_hash,
+		 initial_prompt, start_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.ProjectID, string(r.Status), r.BaseBranch, r.WorkBranch,
 		r.OrchestratorMode, r.OrchestratorRuntime, r.OrchestratorIdentity,
-		r.SRSApprovalDelegate, r.BudgetMaxUSD, r.ConfigSnapshot, r.SRSHash)
+		r.SRSApprovalDelegate, r.BudgetMaxUSD, r.ConfigSnapshot, r.SRSHash,
+		r.InitialPrompt, r.StartSource)
 	if err != nil {
 		return fmt.Errorf("creating run: %w", err)
 	}
@@ -26,6 +28,7 @@ func (d *DB) GetRun(id string) (*ProjectRun, error) {
 	row := d.QueryRow(`SELECT id, project_id, status, base_branch, work_branch,
 		orchestrator_mode, orchestrator_runtime, orchestrator_identity,
 		srs_approval_delegate, budget_max_usd, config_snapshot, srs_hash,
+		initial_prompt, start_source,
 		started_at, paused_at, cancelled_at, completed_at
 		FROM project_runs WHERE id = ?`, id)
 	return scanRun(row)
@@ -37,6 +40,7 @@ func (d *DB) GetActiveRun(projectID string) (*ProjectRun, error) {
 	row := d.QueryRow(`SELECT id, project_id, status, base_branch, work_branch,
 		orchestrator_mode, orchestrator_runtime, orchestrator_identity,
 		srs_approval_delegate, budget_max_usd, config_snapshot, srs_hash,
+		initial_prompt, start_source,
 		started_at, paused_at, cancelled_at, completed_at
 		FROM project_runs
 		WHERE project_id = ? AND status IN ('draft_srs','awaiting_srs_approval','active','paused')
@@ -49,6 +53,7 @@ func (d *DB) GetLatestRunByProject(projectID string) (*ProjectRun, error) {
 	row := d.QueryRow(`SELECT id, project_id, status, base_branch, work_branch,
 		orchestrator_mode, orchestrator_runtime, orchestrator_identity,
 		srs_approval_delegate, budget_max_usd, config_snapshot, srs_hash,
+		initial_prompt, start_source,
 		started_at, paused_at, cancelled_at, completed_at
 		FROM project_runs
 		WHERE project_id = ?
@@ -61,6 +66,7 @@ func (d *DB) ListRunsByProject(projectID string) ([]ProjectRun, error) {
 	rows, err := d.Query(`SELECT id, project_id, status, base_branch, work_branch,
 		orchestrator_mode, orchestrator_runtime, orchestrator_identity,
 		srs_approval_delegate, budget_max_usd, config_snapshot, srs_hash,
+		initial_prompt, start_source,
 		started_at, paused_at, cancelled_at, completed_at
 		FROM project_runs WHERE project_id = ? ORDER BY started_at`, projectID)
 	if err != nil {
@@ -118,6 +124,22 @@ func (d *DB) UpdateRunStatus(id string, to RunStatus) error {
 	})
 }
 
+// UpdateRunHandoff persists the initial prompt, start source, and orchestrator mode
+// on a run record. Used by engine.StartRun after the low-level CreateRun.
+func (d *DB) UpdateRunHandoff(id, prompt, source, orchMode string) error {
+	res, err := d.Exec(
+		`UPDATE project_runs SET initial_prompt = ?, start_source = ?, orchestrator_mode = ? WHERE id = ?`,
+		prompt, source, orchMode, id)
+	if err != nil {
+		return fmt.Errorf("updating run handoff: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateRunSRSHash stores the SRS SHA-256 hash on a run record.
 func (d *DB) UpdateRunSRSHash(id string, hash string) error {
 	res, err := d.Exec(`UPDATE project_runs SET srs_hash = ? WHERE id = ?`, hash, id)
@@ -141,6 +163,7 @@ func scanRun(row *sql.Row) (*ProjectRun, error) {
 		&r.ID, &r.ProjectID, &status, &r.BaseBranch, &r.WorkBranch,
 		&r.OrchestratorMode, &r.OrchestratorRuntime, &orchIdentity,
 		&r.SRSApprovalDelegate, &r.BudgetMaxUSD, &r.ConfigSnapshot, &srsHash,
+		&r.InitialPrompt, &r.StartSource,
 		&startedAt, &pausedAt, &cancelledAt, &completedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -172,6 +195,7 @@ func scanRunRow(rows *sql.Rows) (*ProjectRun, error) {
 		&r.ID, &r.ProjectID, &status, &r.BaseBranch, &r.WorkBranch,
 		&r.OrchestratorMode, &r.OrchestratorRuntime, &orchIdentity,
 		&r.SRSApprovalDelegate, &r.BudgetMaxUSD, &r.ConfigSnapshot, &srsHash,
+		&r.InitialPrompt, &r.StartSource,
 		&startedAt, &pausedAt, &cancelledAt, &completedAt,
 	)
 	if err != nil {

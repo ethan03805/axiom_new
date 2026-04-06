@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,14 +34,27 @@ func TestCLIInitRunStatusFlow_ExistingProjectFixture(t *testing.T) {
 			t.Fatalf("status output missing idle state:\n%s", statusOutput)
 		}
 
+		// Commit the .axiom/ init changes so the working tree is clean
+		// (StartRun validates clean tree per architecture Section 28.2)
+		gitCommitAll(t, repoDir, "axiom init")
+
 		runOutput := executeCobra(t, cli.RunCmd(&verbose), "Build the first feature")
 		if !strings.Contains(runOutput, "Run created") {
 			t.Fatalf("run output missing creation summary:\n%s", runOutput)
+		}
+		if !strings.Contains(runOutput, "external orchestrator") {
+			t.Fatalf("run output missing external orchestrator message:\n%s", runOutput)
+		}
+		if !strings.Contains(runOutput, "Build the first feature") {
+			t.Fatalf("run output missing prompt:\n%s", runOutput)
 		}
 
 		statusAfterRun := executeCobra(t, statusCmd())
 		if !strings.Contains(statusAfterRun, "draft_srs") {
 			t.Fatalf("status after run missing draft_srs state:\n%s", statusAfterRun)
+		}
+		if !strings.Contains(statusAfterRun, "external") {
+			t.Fatalf("status after run missing orchestrator mode:\n%s", statusAfterRun)
 		}
 	})
 }
@@ -87,6 +101,20 @@ func executeCobra(t *testing.T, cmd *cobra.Command, args ...string) string {
 	}
 
 	return buf.String()
+}
+
+// gitCommitAll stages all changes and commits them in the given directory.
+func gitCommitAll(t *testing.T, dir, msg string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-m", msg, "--allow-empty"},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s", args, string(out))
+		}
+	}
 }
 
 func withWorkingDir(t *testing.T, dir string, fn func()) {

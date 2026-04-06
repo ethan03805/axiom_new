@@ -27,6 +27,12 @@ func TestRunAction_CreatesRun(t *testing.T) {
 	if !strings.Contains(output, "axiom/test-project") {
 		t.Errorf("expected output to contain work branch 'axiom/test-project', got: %s", output)
 	}
+	if !strings.Contains(output, "external orchestrator") {
+		t.Errorf("expected output to mention external orchestrator, got: %s", output)
+	}
+	if !strings.Contains(output, "Build a web app") {
+		t.Errorf("expected output to contain prompt, got: %s", output)
+	}
 }
 
 func TestRunAction_UsesConfigBudget(t *testing.T) {
@@ -240,6 +246,15 @@ func TestRunAction_PersistsRun(t *testing.T) {
 	}
 	if run.BudgetMaxUSD != 5.0 {
 		t.Errorf("budget = %v, want 5.0", run.BudgetMaxUSD)
+	}
+	if run.InitialPrompt != "test prompt" {
+		t.Errorf("initial_prompt = %q, want %q", run.InitialPrompt, "test prompt")
+	}
+	if run.StartSource != "cli" {
+		t.Errorf("start_source = %q, want cli", run.StartSource)
+	}
+	if run.OrchestratorMode != "external" {
+		t.Errorf("orchestrator_mode = %q, want external", run.OrchestratorMode)
 	}
 }
 

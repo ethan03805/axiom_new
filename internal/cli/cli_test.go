@@ -36,6 +36,21 @@ func testDB(t *testing.T) *state.DB {
 	return db
 }
 
+// noopGitService satisfies engine.GitService for unit tests.
+type noopGitService struct{}
+
+func (n *noopGitService) CurrentBranch(dir string) (string, error)              { return "main", nil }
+func (n *noopGitService) CreateBranch(dir, name string) error                   { return nil }
+func (n *noopGitService) CurrentHEAD(dir string) (string, error)                { return "abc123", nil }
+func (n *noopGitService) IsDirty(dir string) (bool, error)                      { return false, nil }
+func (n *noopGitService) ValidateClean(dir string) error                        { return nil }
+func (n *noopGitService) SetupWorkBranch(dir, baseBranch, workBranch string) error { return nil }
+func (n *noopGitService) AddFiles(dir string, files []string) error             { return nil }
+func (n *noopGitService) Commit(dir string, message string) (string, error)     { return "sha", nil }
+func (n *noopGitService) ChangedFilesSince(dir, sinceRef string) ([]string, error) {
+	return nil, nil
+}
+
 func testApp(t *testing.T) *app.App {
 	t.Helper()
 	db := testDB(t)
@@ -55,6 +70,7 @@ func testApp(t *testing.T) *app.App {
 		DB:      db,
 		RootDir: dir,
 		Log:     log,
+		Git:     &noopGitService{},
 		Models:  models.NewRegistryAdapter(registry),
 	})
 	if err != nil {
@@ -145,7 +161,7 @@ func TestAllSection27CommandsExist(t *testing.T) {
 
 	// Section 27 command groups that must exist
 	required := []string{
-		"run", "pause", "resume", "cancel", "export",
+		"run", "pause", "resume", "cancel", "srs", "export",
 		"models", "bitnet", "index",
 		"session", "api", "tunnel", "skill", "tui", "doctor",
 	}

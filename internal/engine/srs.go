@@ -9,6 +9,11 @@ import (
 	"github.com/openaxiom/axiom/internal/state"
 )
 
+// ReadSRSDraft reads the pending SRS draft for a run, if one exists.
+func (e *Engine) ReadSRSDraft(runID string) (string, error) {
+	return srs.ReadDraft(e.rootDir, runID)
+}
+
 // SubmitSRS validates an SRS draft and transitions the run to awaiting_srs_approval.
 // The SRS content is validated for required structure per Architecture Section 6.1,
 // then persisted as a draft. The run must be in draft_srs status.

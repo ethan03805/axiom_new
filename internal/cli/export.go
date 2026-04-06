@@ -43,11 +43,14 @@ type exportData struct {
 }
 
 type exportRun struct {
-	ID         string  `json:"id"`
-	Status     string  `json:"status"`
-	BaseBranch string  `json:"base_branch"`
-	WorkBranch string  `json:"work_branch"`
-	BudgetMax  float64 `json:"budget_max_usd"`
+	ID               string  `json:"id"`
+	Status           string  `json:"status"`
+	BaseBranch       string  `json:"base_branch"`
+	WorkBranch       string  `json:"work_branch"`
+	BudgetMax        float64 `json:"budget_max_usd"`
+	InitialPrompt    string  `json:"initial_prompt,omitempty"`
+	StartSource      string  `json:"start_source,omitempty"`
+	OrchestratorMode string  `json:"orchestrator_mode,omitempty"`
 }
 
 type exportTask struct {
@@ -76,11 +79,14 @@ func exportAction(application *app.App, projectID string, w io.Writer) error {
 	run, err := application.DB.GetActiveRun(projectID)
 	if err == nil {
 		export.Run = &exportRun{
-			ID:         run.ID,
-			Status:     string(run.Status),
-			BaseBranch: run.BaseBranch,
-			WorkBranch: run.WorkBranch,
-			BudgetMax:  run.BudgetMaxUSD,
+			ID:               run.ID,
+			Status:           string(run.Status),
+			BaseBranch:       run.BaseBranch,
+			WorkBranch:       run.WorkBranch,
+			BudgetMax:        run.BudgetMaxUSD,
+			InitialPrompt:    run.InitialPrompt,
+			StartSource:      run.StartSource,
+			OrchestratorMode: run.OrchestratorMode,
 		}
 
 		// Include tasks for the active run

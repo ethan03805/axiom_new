@@ -176,9 +176,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
-		run, err := s.eng.CreateRun(engine.RunOptions{
+		if body.Prompt == "" {
+			writeError(w, http.StatusBadRequest, "prompt is required")
+			return
+		}
+		run, err := s.eng.StartRun(engine.StartRunOptions{
 			ProjectID: r.PathValue("id"),
+			Prompt:    body.Prompt,
 			BudgetUSD: body.BudgetUSD,
+			Source:    "api",
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -187,11 +193,20 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusCreated, run)
 	}))
 
+	mux.Handle("GET /api/v1/projects/{id}/srs", readMW(func(w http.ResponseWriter, r *http.Request) {
+		s.handlers.HandleGetSRS(w, r, r.PathValue("id"))
+	}))
+	mux.Handle("POST /api/v1/projects/{id}/srs/submit", writeMW(func(w http.ResponseWriter, r *http.Request) {
+		s.handlers.HandleSRSSubmit(w, r, r.PathValue("id"))
+	}))
 	mux.Handle("POST /api/v1/projects/{id}/srs/approve", writeMW(func(w http.ResponseWriter, r *http.Request) {
 		s.handlers.HandleSRSApprove(w, r, r.PathValue("id"))
 	}))
 	mux.Handle("POST /api/v1/projects/{id}/srs/reject", writeMW(func(w http.ResponseWriter, r *http.Request) {
 		s.handlers.HandleSRSReject(w, r, r.PathValue("id"))
+	}))
+	mux.Handle("GET /api/v1/projects/{id}/run/handoff", readMW(func(w http.ResponseWriter, r *http.Request) {
+		s.handlers.HandleGetRunHandoff(w, r, r.PathValue("id"))
 	}))
 	mux.Handle("POST /api/v1/projects/{id}/eco/approve", writeMW(func(w http.ResponseWriter, r *http.Request) {
 		s.handlers.HandleECOApprove(w, r, r.PathValue("id"))

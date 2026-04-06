@@ -169,6 +169,17 @@ func statusCmd() *cobra.Command {
 				fmt.Fprintf(out, "  Run:    %s\n", status.Run.ID)
 				fmt.Fprintf(out, "  Status: %s\n", status.Run.Status)
 				fmt.Fprintf(out, "  Branch: %s\n", status.Run.WorkBranch)
+				fmt.Fprintf(out, "  Mode:   %s\n", status.Run.OrchestratorMode)
+				if status.Run.Status == "draft_srs" && status.Run.OrchestratorMode == "external" {
+					fmt.Fprintf(out, "  Waiting: external orchestrator to submit SRS draft\n")
+				}
+				if status.Run.InitialPrompt != "" {
+					prompt := status.Run.InitialPrompt
+					if len(prompt) > 80 {
+						prompt = prompt[:77] + "..."
+					}
+					fmt.Fprintf(out, "  Prompt: %s\n", prompt)
+				}
 				fmt.Fprintf(out, "  Budget: $%.2f / $%.2f",
 					status.Budget.SpentUSD, status.Budget.MaxUSD)
 				if status.Budget.WarnReached {

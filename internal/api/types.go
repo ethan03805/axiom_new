@@ -17,6 +17,11 @@ type RunRequest struct {
 	BudgetUSD float64 `json:"budget_usd,omitempty"`
 }
 
+// SRSSubmitRequest is the body for POST /api/v1/projects/:id/srs/submit.
+type SRSSubmitRequest struct {
+	Content string `json:"content"`
+}
+
 // SRSRejectRequest is the body for POST /api/v1/projects/:id/srs/reject.
 type SRSRejectRequest struct {
 	Feedback string `json:"feedback"`
