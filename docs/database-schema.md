@@ -534,7 +534,7 @@ failed → queued   (retry or escalation per Section 15.4)
 `CreateProject`, `GetProject`, `GetProjectByRootPath`, `ListProjects`
 
 **Runs** (`runs.go`):
-`CreateRun`, `GetRun`, `GetActiveRun`, `ListRunsByProject`, `UpdateRunStatus`, `UpdateRunSRSHash`
+`CreateRun`, `GetRun`, `GetActiveRun`, `GetLatestRunByProject`, `ListRunsByProject`, `UpdateRunStatus`, `UpdateRunSRSHash`
 
 **Tasks** (`tasks.go`):
 `CreateTask`, `GetTask`, `ListTasksByRun`, `ListTasksByStatus`, `UpdateTaskStatus`, `AddTaskDependency`, `GetTaskDependencies`, `AddTaskSRSRef`, `GetTaskSRSRefs`, `AddTaskTargetFile`, `GetTaskTargetFiles`, `AcquireLock`, `ReleaseLock`, `ReleaseTaskLocks`, `GetTaskLocks`, `AddLockWait`, `RemoveLockWait`, `ListLockWaits`
@@ -543,7 +543,7 @@ failed → queued   (retry or escalation per Section 15.4)
 `CreateAttempt`, `GetAttempt`, `ListAttemptsByTask`, `UpdateAttemptStatus`, `UpdateAttemptPhase`, `CreateValidationRun`, `ListValidationRuns`, `CreateReviewRun`, `ListReviewRuns`, `CreateArtifact`, `ListArtifacts`
 
 **Sessions** (`sessions.go`):
-`CreateSession`, `GetSession`, `ListSessionsByProject`, `UpdateSessionActivity`, `AddMessage`, `GetMessages`, `AddSessionSummary`, `AddInputHistory`
+`CreateSession`, `GetSession`, `ListSessionsByProject`, `GetLatestSessionByProject`, `UpdateSessionActivity`, `UpdateSessionMode`, `UpdateSessionRunID`, `AddMessage`, `GetMessages`, `GetMessageCount`, `GetMaxSeqBySession`, `DeleteMessagesBySessionBefore`, `AddSessionSummary`, `GetSessionSummaries`, `AddInputHistory`, `GetInputHistoryByProject`
 
 **Events & Costs** (`events.go`):
 `CreateEvent`, `ListEventsByRun`, `ListEventsByType`, `CreateCostLog`, `ListCostLogByRun`, `TotalCostByRun`

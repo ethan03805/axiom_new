@@ -245,11 +245,68 @@ axiom index query --type list_exports --package ./internal/config
 axiom index query --type module_graph
 ```
 
+### Interactive TUI
+
+```bash
+axiom tui                                      # Launch full-screen TUI
+axiom tui --plain                              # Plain-text mode
+```
+
+### Session Management
+
+```bash
+axiom session list                             # List resumable sessions
+axiom session resume <session-id>              # Resume a session
+axiom session export <session-id>              # Export transcript
+```
+
+## Interactive TUI and Sessions
+
+Axiom includes a full-screen interactive terminal UI (Phase 15) built on Bubble Tea:
+
+```bash
+axiom tui                      # Launch full-screen TUI
+axiom tui --plain              # Plain-text startup frame (for non-TTY)
+```
+
+The TUI provides:
+- **Status bar** — project name, session mode, branch, budget
+- **Transcript viewport** — messages, system cards, and event notifications
+- **Task rail** — live task counts (done, running, queued, failed)
+- **Footer composer** — text input with slash command support
+
+### Slash Commands
+
+Type `/` followed by a command name:
+
+```bash
+/status    # Show project status
+/tasks     # Show task breakdown
+/budget    # Show budget details
+/srs       # View SRS state
+/diff      # Preview latest changes
+/help      # Show all commands
+/clear     # Clear transcript
+```
+
+### Session Management
+
+Sessions persist across engine restarts:
+
+```bash
+axiom session list             # List resumable sessions
+axiom session resume <id>      # Resume a specific session
+axiom session export <id>      # Export session transcript
+```
+
+Sessions automatically track the current mode (bootstrap, approval, execution, postrun) based on run state. When resumed, the mode is refreshed.
+
+See [Session & TUI Reference](session-tui.md) for full details.
+
 ## What's Next
 
 The following features are planned for later phases:
 
-- `axiom tui` — interactive terminal UI with sessions (Phase 15)
 - `axiom api start` — external orchestration REST + WebSocket API (Phase 16)
 - `axiom skill generate` — runtime skill generation for orchestrators (Phase 17)
 - `axiom doctor` — system health and dependency checks (Phase 19)

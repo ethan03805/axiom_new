@@ -12,60 +12,6 @@ func stubMessage(command, phase string) string {
 	return fmt.Sprintf("%s is not yet implemented (planned for %s).", command, phase)
 }
 
-// TUICmd creates the `axiom tui` stub command (Phase 15).
-func TUICmd(verbose *bool) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "tui",
-		Short: "Launch interactive TUI",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), stubMessage("Interactive TUI", "Phase 15"))
-			return nil
-		},
-	}
-
-	cmd.Flags().Bool("plain", false, "force plain-text renderer")
-	return cmd
-}
-
-// SessionCmd creates the `axiom session` stub command with subcommands (Phase 15).
-func SessionCmd(verbose *bool) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "session",
-		Short: "Manage interactive sessions",
-	}
-
-	cmd.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List resumable sessions",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), stubMessage("Session list", "Phase 15"))
-			return nil
-		},
-	})
-
-	cmd.AddCommand(&cobra.Command{
-		Use:   "resume <session-id>",
-		Short: "Resume a persisted session",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), stubMessage("Session resume", "Phase 15"))
-			return nil
-		},
-	})
-
-	cmd.AddCommand(&cobra.Command{
-		Use:   "export <session-id>",
-		Short: "Export a session transcript",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), stubMessage("Session export", "Phase 15"))
-			return nil
-		},
-	})
-
-	return cmd
-}
-
 // APICmd creates the `axiom api` stub command with subcommands (Phase 16).
 func APICmd(verbose *bool) *cobra.Command {
 	cmd := &cobra.Command{

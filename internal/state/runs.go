@@ -44,6 +44,18 @@ func (d *DB) GetActiveRun(projectID string) (*ProjectRun, error) {
 	return scanRun(row)
 }
 
+// GetLatestRunByProject returns the most recent run for a project regardless of status.
+func (d *DB) GetLatestRunByProject(projectID string) (*ProjectRun, error) {
+	row := d.QueryRow(`SELECT id, project_id, status, base_branch, work_branch,
+		orchestrator_mode, orchestrator_runtime, orchestrator_identity,
+		srs_approval_delegate, budget_max_usd, config_snapshot, srs_hash,
+		started_at, paused_at, cancelled_at, completed_at
+		FROM project_runs
+		WHERE project_id = ?
+		ORDER BY started_at DESC LIMIT 1`, projectID)
+	return scanRun(row)
+}
+
 // ListRunsByProject returns all runs for a project ordered by start time.
 func (d *DB) ListRunsByProject(projectID string) ([]ProjectRun, error) {
 	rows, err := d.Query(`SELECT id, project_id, status, base_branch, work_branch,

@@ -7,81 +7,8 @@ import (
 
 // Stub commands must exist and return informational messages about their
 // planned implementation phase. They should not panic or return errors.
-
-func TestTUICmd_Exists(t *testing.T) {
-	verbose := false
-	cmd := TUICmd(&verbose)
-	if cmd == nil {
-		t.Fatal("TUICmd returned nil")
-	}
-	if cmd.Name() != "tui" {
-		t.Errorf("command name = %q, want tui", cmd.Name())
-	}
-}
-
-func TestTUICmd_ReturnsStubMessage(t *testing.T) {
-	verbose := false
-	cmd := TUICmd(&verbose)
-
-	output, err := executeCmd(cmd)
-	if err != nil {
-		t.Fatalf("tui command error: %v", err)
-	}
-
-	if !strings.Contains(output, "Phase 15") && !strings.Contains(output, "not yet implemented") {
-		t.Errorf("expected stub message about Phase 15 or not yet implemented, got: %s", output)
-	}
-}
-
-func TestSessionCmd_Exists(t *testing.T) {
-	verbose := false
-	cmd := SessionCmd(&verbose)
-	if cmd == nil {
-		t.Fatal("SessionCmd returned nil")
-	}
-}
-
-func TestSessionListStub(t *testing.T) {
-	verbose := false
-	cmd := SessionCmd(&verbose)
-
-	output, err := executeCmd(cmd, "list")
-	if err != nil {
-		t.Fatalf("session list error: %v", err)
-	}
-
-	if !strings.Contains(output, "Phase 15") && !strings.Contains(output, "not yet implemented") {
-		t.Errorf("expected stub message, got: %s", output)
-	}
-}
-
-func TestSessionResumeStub(t *testing.T) {
-	verbose := false
-	cmd := SessionCmd(&verbose)
-
-	output, err := executeCmd(cmd, "resume", "some-id")
-	if err != nil {
-		t.Fatalf("session resume error: %v", err)
-	}
-
-	if !strings.Contains(output, "Phase 15") && !strings.Contains(output, "not yet implemented") {
-		t.Errorf("expected stub message, got: %s", output)
-	}
-}
-
-func TestSessionExportStub(t *testing.T) {
-	verbose := false
-	cmd := SessionCmd(&verbose)
-
-	output, err := executeCmd(cmd, "export", "some-id")
-	if err != nil {
-		t.Fatalf("session export error: %v", err)
-	}
-
-	if !strings.Contains(output, "Phase 15") && !strings.Contains(output, "not yet implemented") {
-		t.Errorf("expected stub message, got: %s", output)
-	}
-}
+// Phase 15 commands (TUI, Session) have been implemented and have their
+// own tests in session_test.go.
 
 func TestAPICmd_Exists(t *testing.T) {
 	verbose := false

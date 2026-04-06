@@ -101,6 +101,18 @@ func initCmd() *cobra.Command {
 
 			slug := project.Slugify(name)
 
+			// Create the project record in the database so subsequent
+			// commands (status, session, run) can find it.
+			proj := &state.Project{
+				ID:       slug,
+				RootPath: cwd,
+				Name:     name,
+				Slug:     slug,
+			}
+			if err := db.CreateProject(proj); err != nil {
+				return fmt.Errorf("creating project record: %w", err)
+			}
+
 			fmt.Printf("Axiom project initialized in %s\n", cwd)
 			fmt.Printf("  Project: %s\n", name)
 			fmt.Printf("  Slug:    %s\n", slug)

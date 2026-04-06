@@ -109,7 +109,7 @@ axiom/
 │   ├── testgen/            # Test-generation separation and convergence logic (Phase 13)
 │   │   └── testgen.go      # Service, CreateTestTask, GetExcludeFamily, HandleTestFailure, CheckConvergence, MarkConverged, MarkBlocked, IsFeatureDone
 │   │
-│   ├── cli/                # Plain CLI command surface (Phase 14)
+│   ├── cli/                # Plain CLI command surface (Phase 14) + session/TUI commands (Phase 15)
 │   │   ├── commands.go     # Commands() registry — returns all CLI commands
 │   │   ├── helpers.go      # Shared helpers (findProjectID, findActiveRun, openApp)
 │   │   ├── run.go          # axiom run, pause, resume, cancel
@@ -117,7 +117,17 @@ axiom/
 │   │   ├── models.go       # axiom models refresh/list/info
 │   │   ├── bitnet.go       # axiom bitnet start/stop/status/models
 │   │   ├── index.go        # axiom index refresh/query
-│   │   └── stubs.go        # Stub commands for session, api, tunnel, skill, tui, doctor
+│   │   ├── session.go      # axiom session list/resume/export, axiom tui (Phase 15)
+│   │   └── stubs.go        # Stub commands for api, tunnel, skill, doctor
+│   │
+│   ├── session/            # Session UX Manager (Phase 15)
+│   │   └── manager.go      # Manager: create/resume sessions, mode transitions, startup summary, transcript, compaction, export, suggestions
+│   │
+│   ├── tui/                # Bubble Tea terminal UI (Phase 15)
+│   │   ├── model.go        # Main Bubble Tea model: Update/View, event handling, slash commands
+│   │   ├── styles.go       # Lip Gloss theme definitions
+│   │   ├── plain.go        # Plain-text fallback renderer for non-TTY environments
+│   │   └── program.go      # Bubble Tea program wrapper with alt-screen and mouse support
 │   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
@@ -126,8 +136,6 @@ axiom/
 │   ├── doctor/             # System health checks
 │   ├── orchestrator/       # Orchestrator lifecycle management
 │   ├── security/           # Secret scanning, prompt safety, redaction
-│   ├── session/            # Session UX manager
-│   ├── tui/                # Bubble Tea terminal UI
 ├── migrations/             # (Legacy location — migrations are now embedded)
 ├── testdata/               # Test fixture data
 ├── scripts/                # Build and utility scripts
@@ -148,6 +156,9 @@ axiom/
 | SQLite driver | [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) | Pure Go, no CGo — builds on all platforms without C toolchain |
 | UUID generation | [google/uuid](https://github.com/google/uuid) | RFC 4122 UUIDs for run, task, and session IDs |
 | Logging | `log/slog` (stdlib) | Structured logging, Go 1.21+ standard library |
+| TUI framework | [Bubble Tea](https://github.com/charmbracelet/bubbletea) | Event-driven terminal UI framework |
+| TUI components | [Bubbles](https://github.com/charmbracelet/bubbles) | Reusable terminal widgets (textarea, viewport) |
+| TUI styling | [Lip Gloss](https://github.com/charmbracelet/lipgloss) | Declarative terminal styling and layout |
 | Testing | `testing` (stdlib) | Standard Go test framework |
 
 ## Build Commands
@@ -261,7 +272,7 @@ Current test coverage by package:
 |---------|-------|----------|
 | `internal/version` | 2 | Version string formatting |
 | `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
-| `internal/state` | 104 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (8), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22) |
+| `internal/state` | 113 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (17: create/get/list/activity/messages/uniqueness/summaries/input-history + Phase 15: update-mode/update-run-id/get-summaries/input-history-by-project/message-count/delete-before/latest-session), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
 | `internal/events` | 11 | Bus creation, SQLite persistence, subscriber fan-out, filtered subscriptions, unsubscribe, view-model event classification, concurrent safety |
 | `internal/srs` | 17 | Structure validation (8), bootstrap context (3), draft persistence (5), hash computation (1) |
@@ -280,7 +291,9 @@ Current test coverage by package:
 | `internal/validation` | 22 | Language detection (6), profiles (5), sandbox spec (2), result aggregation (3), service orchestration (6) |
 | `internal/review` | 29 | Risky file detection (4), tier escalation (5), diversification (4), model selection (4), verdict parsing (4), container spec (1), service orchestration (4), orchestrator gate (2), FindRiskyFiles (1) |
 | `internal/mergequeue` | 20 | Empty queue (1), queue length (1), clean merge (2), stale snapshot (2), integration failure (2), file operations (2), serialization (1), events (3), commit failure (1), indexer failure (1), affected files (1), git staging (1), file revert (2), context cancellation (1) |
-| `internal/cli` | 67 | Command registration (7: all Section 27 commands + subcommand trees for models/bitnet/index/api/session/tunnel), run actions (15: create/budget/branch/persist/event, pause/resume/cancel with state verification and error cases, findActiveRun/findProjectID helpers), export (5: no-run/active-run/with-tasks/indented-JSON/project-root), models (7: refresh/list-all/filter-tier/filter-family/no-results/info/not-found), bitnet (6: status/endpoint/start/stop/models/disabled-config), index (11: refresh/5-query-types/invalid-type/4-required-param-validations), stubs (16: tui/session/api/tunnel/skill/doctor existence + phase messages) |
+| `internal/session` | 19 | Session create/resume (4), mode determination (5), startup summary (2), transcript (1), compaction (1), export (2), suggestions (2), events (1), input history (1) |
+| `internal/tui` | 29 | Model creation (2), view rendering (3), input handling (2), slash commands (6), overlay (1), status bar (1), task rail (1), window resize (1), transcript (1), submit input (2), plain renderer (7) |
+| `internal/cli` | 58 | Command registration (7), run actions (15), export (5), models (7), bitnet (6), index (11), session commands (7: list with/without sessions, export, resume found/not-found, TUI plain flag/mode), stubs (10: api/tunnel/skill/doctor existence + phase messages) |
 
 ### Test Patterns
 
@@ -331,7 +344,8 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 12 | Merge Queue and Integration Checks | Complete |
 | 13 | Test-Generation Separation and Convergence Logic | Complete |
 | 14 | Plain CLI Command Surface | Complete |
-| 15-20 | Remaining phases | Not started |
+| 15 | Session UX Manager and Bubble Tea TUI | Complete |
+| 16-20 | Remaining phases | Not started |
 
 ### Phase 14 Summary
 
@@ -361,11 +375,11 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
   - `axiom index refresh` — performs full project re-index via `Indexer.Index`
   - `axiom index query --type <type> [--name <name>] [--package <pkg>]` — supports all five Architecture Section 17.5 query types with parameter validation (lookup_symbol/reverse_dependencies/find_implementations require `--name`, list_exports requires `--package`)
 
-- **Stub commands** (`cli/stubs.go`) — All Section 27 commands that depend on subsystems from later phases exist as stubs returning informational messages:
-  - `axiom tui [--plain]`, `axiom session list/resume/export` — Phase 15
+- **Stub commands** (`cli/stubs.go`) — Section 27 commands that depend on subsystems from later phases exist as stubs returning informational messages:
   - `axiom api start/stop`, `axiom api token generate [--scope]/list/revoke`, `axiom tunnel start/stop` — Phase 16
   - `axiom skill generate --runtime <rt>` — Phase 17
   - `axiom doctor` — Phase 19
+  - Note: `axiom tui`, `axiom session` were stubs in Phase 14 but are now fully implemented (Phase 15).
 
 - **Design decisions** — All commands use engine projections and service methods rather than direct SQLite access, per Architecture constraint 7. Commands are testable via separated action functions that accept an `*app.App` and `io.Writer`, allowing tests to call the logic directly without cobra or filesystem dependencies.
 
@@ -386,6 +400,44 @@ Phase 14 implemented the plain CLI command surface per Architecture Section 27, 
   - `axiom index refresh` CLI wiring (was deferred from Phase 8)
 
 See [CLI Reference](cli-reference.md) for the full command documentation.
+
+### Phase 15 Summary
+
+Phase 15 implemented the Session UX Manager and Bubble Tea TUI per Architecture Section 26.2:
+
+- **Session UX Manager** (`session/manager.go`) — Engine-side component responsible for interactive terminal-session orchestration. `CreateSession` creates a new session with auto-determined mode from run state. `ResumeSession` resumes by ID, refreshing mode from current state. `ResumeOrCreateSession` resumes the most recent session or creates a new one. `DetermineMode` maps run status to four session modes: `bootstrap` (no run/draft), `approval` (awaiting SRS), `execution` (active/paused), `postrun` (completed/cancelled/error). `StartupSummary` generates the deterministic startup frame (engine-authored, no LLM) with workspace identity, action card, budget, tasks, and command suggestions. `AddTranscriptMessage` persists messages with auto-incrementing sequence numbers. `CompactSession` summarizes old messages into `ui_session_summaries` and deletes them, keeping only the most recent N messages. `ExportSession` returns the full transcript and summaries. `PromptSuggestions` returns mode-specific deterministic suggestions. `RecordInput`/`InputHistory` manage per-project input history for up-arrow recall. `UpdateMode` transitions session mode and emits `session_mode_changed` events.
+
+- **Bubble Tea TUI** (`tui/model.go`, `tui/styles.go`, `tui/program.go`) — Full-screen interactive terminal UI using Bubble Tea, Bubbles, and Lip Gloss. Layout: top status bar (project, mode, branch, budget), main transcript viewport, right-side task rail (task counts, budget), and footer composer (textarea with mode indicator and shortcut hints). Subscribes to engine event bus for real-time updates. Handles `task_projection_updated`, `session_mode_changed`, `approval_requested`, and `diff_preview_ready` events. Implements 11 slash commands: `/status`, `/tasks`, `/budget`, `/srs`, `/eco`, `/diff`, `/new`, `/resume`, `/clear`, `/theme`, `/help`. Supports `!` shell-mode prefix and up/down arrow input history. Overlay system for help view (Esc to dismiss). Theme with 14 Lip Gloss style definitions using ANSI 256 colors.
+
+- **Plain-text fallback** (`tui/plain.go`) — Line-oriented renderer for non-TTY environments per Section 26.2.11. `RenderStartup` writes the deterministic startup frame. `RenderMessage` writes role-prefixed message lines. `RenderStatus` writes project status. `RenderSessionList` writes session table. `RenderExport` writes full transcript export. `RenderApproval` writes approval prompts. `RenderTaskList` writes task summary. `RenderEvent` writes single event lines. `RunStatus` writes one-line status for polling scripts.
+
+- **CLI commands** (`cli/session.go`) — Replaced Phase 14 stubs with real implementations:
+  - `axiom session list` — lists sessions for the project via `PlainRenderer.RenderSessionList`
+  - `axiom session resume <id>` — resumes a session via `Manager.ResumeSession`, prints confirmation
+  - `axiom session export <id>` — exports transcript via `Manager.ExportSession` + `PlainRenderer.RenderExport`
+  - `axiom tui` — launches full-screen Bubble Tea TUI if stdout is TTY, or plain-text startup frame if not
+  - `axiom tui --plain` — forces plain-text renderer
+
+- **New state methods** — Added to `state/sessions.go`: `UpdateSessionMode` (change mode), `UpdateSessionRunID` (link to run), `GetLatestSessionByProject` (most recently active), `GetSessionSummaries` (list summaries), `GetMessageCount` (for compaction threshold), `DeleteMessagesBySessionBefore` (compaction deletion), `GetInputHistoryByProject` (recent history). Added to `state/runs.go`: `GetLatestRunByProject` (most recent run regardless of status).
+
+- **Init fix** — `axiom init` now creates the project record in the database so subsequent commands (`session list`, `status`, `tui`) can find the project without requiring `axiom run` first.
+
+- **Test coverage** — 55 new tests:
+  - `session/manager_test.go` (19) — session create/resume, mode determination for all run states, startup summary, transcript, compaction, export, suggestions, event emission, input history
+  - `tui/tui_test.go` (20) — model creation, view rendering with startup frame, input handling, quit on ctrl+c, all slash commands, overlay toggle, status bar, task rail, window resize, transcript append, submit routing
+  - `tui/plain_test.go` (9) — plain renderer startup, active run, messages, status, session list/empty, export
+  - `cli/session_test.go` (7) — session list with/without sessions, export with messages, resume found/not-found, TUI plain flag, TUI plain mode output
+
+- **Known deferred items:**
+  - File mention autocomplete (`@` trigger)
+  - LLM-generated prompt suggestions (deterministic heuristics only)
+  - Theme switching (placeholder `/theme` command)
+  - Diff preview overlay with syntax highlighting
+  - Individual task inspection views
+  - Approval card overlay dialogs
+  - Shell mode execution (`!` captures intent only)
+
+See [Session & TUI Reference](session-tui.md) for the full documentation.
 
 ### Phase 13 Summary
 

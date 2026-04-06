@@ -31,7 +31,8 @@ axiom init [flags]
 3. Writes `.gitignore` for ephemeral runtime state
 4. Creates an empty `models.json`
 5. Creates and migrates the SQLite database
-6. Validates the generated configuration
+6. Creates the project record in the database
+7. Validates the generated configuration
 
 **Example:**
 ```bash
@@ -231,18 +232,81 @@ axiom index query --type <query_type> [--name <symbol>] [--package <pkg>]
 | `find_implementations` | `--name` | Find interface implementations |
 | `module_graph` | (none) | Show package dependency graph |
 
+## Interactive Session Commands (Phase 15)
+
+### `axiom tui`
+
+Launch the interactive full-screen TUI.
+
+```bash
+axiom tui [--plain]
+```
+
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--plain` | false | Force plain-text renderer instead of full-screen TUI |
+
+**Behavior:**
+- If stdout is a TTY and `--plain` is not set: launches full-screen Bubble Tea TUI with status bar, transcript viewport, task rail, and footer composer.
+- If stdout is not a TTY or `--plain` is set: renders a deterministic startup frame in plain text and exits.
+
+**Example (plain mode):**
+```bash
+$ axiom tui --plain
+Axiom — my-project
+  Mode:    bootstrap
+  Root:    /home/user/my-project
+  Budget:  $0.00 / $10.00
+
+  Describe what you want to build.
+
+  Commands: /new  /status  /help
+```
+
+The TUI supports slash commands (`/status`, `/tasks`, `/help`, etc.), shell mode (`!` prefix), and input history (up/down arrows). See [Session & TUI Reference](session-tui.md) for full details.
+
+### `axiom session list`
+
+List all resumable sessions for the current project.
+
+```bash
+$ axiom session list
+Sessions for project:
+  a1b2c3d4  (unnamed)  mode:bootstrap  last:2026-04-06 01:27
+  e5f6g7h8  (unnamed)  mode:execution  run:i9j0k1l2  last:2026-04-06 02:15
+```
+
+### `axiom session resume <session-id>`
+
+Resume a persisted interactive session by its full UUID.
+
+```bash
+$ axiom session resume a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Resumed session a1b2c3d4 (mode: bootstrap)
+```
+
+The session's mode is refreshed from the current run state on resume.
+
+### `axiom session export <session-id>`
+
+Export a session's transcript and compaction summaries to stdout.
+
+```bash
+$ axiom session export a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Session Export: a1b2c3d4
+  Project:  my-project
+  Mode:     bootstrap
+  Created:  2026-04-06 01:27:20
+
+--- Transcript ---
+[01:27:20] > Build me a REST API
+[01:27:21]   [system_card] Starting SRS generation...
+```
+
 ## Stub Commands (Planned for Later Phases)
 
 These commands exist in the CLI surface but delegate to subsystems not yet implemented:
-
-### Interactive Session Commands (Phase 15)
-| Command | Description |
-|---------|-------------|
-| `axiom tui` | Launch interactive TUI |
-| `axiom tui --plain` | Plain text renderer |
-| `axiom session list` | List resumable sessions |
-| `axiom session resume <id>` | Resume a session |
-| `axiom session export <id>` | Export session transcript |
 
 ### API & Tunnel Commands (Phase 16)
 | Command | Description |
