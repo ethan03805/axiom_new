@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/openaxiom/axiom/internal/app"
+	"github.com/openaxiom/axiom/internal/cli"
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/project"
 	"github.com/openaxiom/axiom/internal/state"
@@ -30,6 +31,11 @@ func main() {
 	root.AddCommand(versionCmd())
 	root.AddCommand(initCmd())
 	root.AddCommand(statusCmd())
+
+	// Phase 14: Register all CLI commands from Section 27.
+	for _, cmd := range cli.Commands(&verbose) {
+		root.AddCommand(cmd)
+	}
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

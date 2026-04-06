@@ -109,11 +109,20 @@ axiom/
 │   ├── testgen/            # Test-generation separation and convergence logic (Phase 13)
 │   │   └── testgen.go      # Service, CreateTestTask, GetExcludeFamily, HandleTestFailure, CheckConvergence, MarkConverged, MarkBlocked, IsFeatureDone
 │   │
+│   ├── cli/                # Plain CLI command surface (Phase 14)
+│   │   ├── commands.go     # Commands() registry — returns all CLI commands
+│   │   ├── helpers.go      # Shared helpers (findProjectID, findActiveRun, openApp)
+│   │   ├── run.go          # axiom run, pause, resume, cancel
+│   │   ├── export.go       # axiom export (JSON project state)
+│   │   ├── models.go       # axiom models refresh/list/info
+│   │   ├── bitnet.go       # axiom bitnet start/stop/status/models
+│   │   ├── index.go        # axiom index refresh/query
+│   │   └── stubs.go        # Stub commands for session, api, tunnel, skill, tui, doctor
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
-│   ├── cli/                # CLI command helpers
 │   ├── doctor/             # System health checks
 │   ├── orchestrator/       # Orchestrator lifecycle management
 │   ├── security/           # Secret scanning, prompt safety, redaction
@@ -271,6 +280,7 @@ Current test coverage by package:
 | `internal/validation` | 22 | Language detection (6), profiles (5), sandbox spec (2), result aggregation (3), service orchestration (6) |
 | `internal/review` | 29 | Risky file detection (4), tier escalation (5), diversification (4), model selection (4), verdict parsing (4), container spec (1), service orchestration (4), orchestrator gate (2), FindRiskyFiles (1) |
 | `internal/mergequeue` | 20 | Empty queue (1), queue length (1), clean merge (2), stale snapshot (2), integration failure (2), file operations (2), serialization (1), events (3), commit failure (1), indexer failure (1), affected files (1), git staging (1), file revert (2), context cancellation (1) |
+| `internal/cli` | 67 | Command registration (7: all Section 27 commands + subcommand trees for models/bitnet/index/api/session/tunnel), run actions (15: create/budget/branch/persist/event, pause/resume/cancel with state verification and error cases, findActiveRun/findProjectID helpers), export (5: no-run/active-run/with-tasks/indented-JSON/project-root), models (7: refresh/list-all/filter-tier/filter-family/no-results/info/not-found), bitnet (6: status/endpoint/start/stop/models/disabled-config), index (11: refresh/5-query-types/invalid-type/4-required-param-validations), stubs (16: tui/session/api/tunnel/skill/doctor existence + phase messages) |
 
 ### Test Patterns
 
@@ -284,6 +294,7 @@ Current test coverage by package:
 - Model registry tests use `httptest.NewServer` for mock OpenRouter and BitNet API endpoints
 - BitNet service tests use `httptest.NewServer` with a test URL override for mock health and model endpoints
 - Indexer tests use embedded fixture files in `internal/index/testdata/` with Go, TypeScript, Python, and Rust source files
+- CLI tests create a full `app.App` with real DB, engine, registry, and BitNet service in temp directories, then call action functions directly (not through cobra) for deterministic output verification
 - No external service dependencies in current tests (Docker, network, inference are all mocked)
 
 ## Architecture Constraints
@@ -319,7 +330,62 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 11 | Manifest Validation, Validation Sandbox, Review Pipeline | Complete |
 | 12 | Merge Queue and Integration Checks | Complete |
 | 13 | Test-Generation Separation and Convergence Logic | Complete |
-| 14-20 | Remaining phases | Not started |
+| 14 | Plain CLI Command Surface | Complete |
+| 15-20 | Remaining phases | Not started |
+
+### Phase 14 Summary
+
+Phase 14 implemented the plain CLI command surface per Architecture Section 27, making the engine fully operable without the full-screen TUI:
+
+- **CLI package** (`cli/`) — New `internal/cli/` package with `Commands()` entry point returning all CLI commands for registration. Commands are split into separate files by domain: `run.go` (project lifecycle), `export.go` (JSON export), `models.go` (model registry), `bitnet.go` (BitNet server), `index.go` (semantic indexer), `stubs.go` (future-phase placeholders). Shared helpers in `helpers.go` provide `findProjectID` (lookup project by root path), `findActiveRun` (lookup active run for a project), and `openApp` (create App from cwd).
+
+- **Project lifecycle commands** (`cli/run.go`) — Four commands wired to engine methods:
+  - `axiom run "<prompt>" [--budget <usd>]` — creates a project run in `draft_srs` status using `engine.CreateRun`, defaults budget to config value, prints run ID/status/branch/budget
+  - `axiom pause` — finds active run, calls `engine.PauseRun`, prints confirmation
+  - `axiom resume` — finds active run, calls `engine.ResumeRun`, prints confirmation
+  - `axiom cancel` — finds active run, calls `engine.CancelRun`, prints confirmation
+
+- **Export command** (`cli/export.go`) — `axiom export` outputs human-readable indented JSON containing project identity, active run state, and all tasks for the run. Uses `json.MarshalIndent` for readability per Architecture Section 27.2.
+
+- **Model commands** (`cli/models.go`) — Three subcommands backed by `models.Registry`:
+  - `axiom models refresh` — refreshes from shipped data, OpenRouter (if API key configured), and BitNet (if enabled), with per-source warning on failure
+  - `axiom models list [--tier <tier>] [--family <family>]` — tabular output via `tabwriter` with ID, family, tier, context window, and source columns
+  - `axiom models info <model-id>` — detailed output including pricing, capability flags, strengths, weaknesses, and recommendations
+
+- **BitNet commands** (`cli/bitnet.go`) — Four subcommands backed by `bitnet.Service`:
+  - `axiom bitnet start` / `axiom bitnet stop` — delegate to `Service.Start`/`Stop` (manual-mode stubs in current release)
+  - `axiom bitnet status` — shows enabled/disabled state, endpoint, running status, and loaded model count
+  - `axiom bitnet models` — lists models loaded in the server with ID and owner
+
+- **Index commands** (`cli/index.go`) — Two subcommands backed by `index.Indexer`:
+  - `axiom index refresh` — performs full project re-index via `Indexer.Index`
+  - `axiom index query --type <type> [--name <name>] [--package <pkg>]` — supports all five Architecture Section 17.5 query types with parameter validation (lookup_symbol/reverse_dependencies/find_implementations require `--name`, list_exports requires `--package`)
+
+- **Stub commands** (`cli/stubs.go`) — All Section 27 commands that depend on subsystems from later phases exist as stubs returning informational messages:
+  - `axiom tui [--plain]`, `axiom session list/resume/export` — Phase 15
+  - `axiom api start/stop`, `axiom api token generate [--scope]/list/revoke`, `axiom tunnel start/stop` — Phase 16
+  - `axiom skill generate --runtime <rt>` — Phase 17
+  - `axiom doctor` — Phase 19
+
+- **Design decisions** — All commands use engine projections and service methods rather than direct SQLite access, per Architecture constraint 7. Commands are testable via separated action functions that accept an `*app.App` and `io.Writer`, allowing tests to call the logic directly without cobra or filesystem dependencies.
+
+- **Main.go integration** — `cmd/axiom/main.go` registers all commands via `cli.Commands(&verbose)` loop. Pre-existing `version`, `init`, and `status` commands remain in main.go.
+
+- **Test coverage** — 67 tests across 7 test files:
+  - `cli_test.go` (7) — command registration tests verifying all Section 27 command groups and subcommand trees exist
+  - `run_test.go` (15) — run creation, budget defaults, pause/resume/cancel state transitions, error cases, event emission, helper functions
+  - `export_test.go` (5) — JSON output with no run, active run, tasks, indentation, project root inclusion
+  - `models_test.go` (7) — refresh, list all, filter by tier/family, no results, info, not found
+  - `bitnet_test.go` (6) — status, endpoint, start/stop guards, models, disabled config
+  - `index_test.go` (11) — refresh, all 5 query types, invalid type, 4 required parameter validations
+  - `stubs_test.go` (16) — all stub commands exist and return phase-appropriate messages
+
+- **Resolved deferred items from prior phases:**
+  - `axiom run "<prompt>"` CLI wiring (was deferred from Phase 9)
+  - `axiom models` and `axiom bitnet` CLI wiring (was deferred from Phase 7)
+  - `axiom index refresh` CLI wiring (was deferred from Phase 8)
+
+See [CLI Reference](cli-reference.md) for the full command documentation.
 
 ### Phase 13 Summary
 
@@ -351,6 +417,8 @@ Phase 13 enforced architecture-mandated independence between implementation and 
 See [Test-Generation Separation Reference](test-generation.md) for the full API.
 
 ### Phase 12 Summary
+
+Phase 12 implemented the serialized merge queue and integration checks per Architecture Sections 16.4, 23.2, 23.3, and 30.2:
 
 Phase 12 implemented the serialized merge queue and integration checks per Architecture Sections 16.4, 23.2, 23.3, and 30.2:
 
@@ -469,7 +537,7 @@ Phase 9 implemented the SRS approval state machine and ECO lifecycle per Archite
 - **ECO-to-task integration hooks** — The existing `Task.ECORef` foreign key and `TaskCancelledECO` status provide the hook points for ECO-driven task cancellation and replanning. The actual task replanning logic is the orchestrator's responsibility (Phase 10+).
 
 - **Known deferred items:**
-  - `axiom run "<prompt>"` CLI command wiring (Phase 14)
+  - ~~`axiom run "<prompt>"` CLI command wiring~~ — resolved in Phase 14
   - SRS approval delegation to Claw (engine infrastructure is ready; Claw integration is Phase 16)
   - SRS hash verification on engine startup (Phase 19)
   - Full semantic index query access during bootstrap for existing projects (currently provides file listing; full index queries available via `IndexService`)
@@ -505,7 +573,7 @@ Phase 8 implemented the semantic indexer and typed query API per Architecture Se
 - **Known deferred items:**
   - tree-sitter CGO bindings for non-Go languages (currently regex-based; designed for drop-in upgrade when a C compiler is available)
   - Implementation detection line numbers (currently 0 for Go interface implementations detected post-parse)
-  - CLI command wiring for `axiom index refresh` (Phase 14)
+  - ~~CLI command wiring for `axiom index refresh`~~ — resolved in Phase 14
 
 See [Semantic Indexer Reference](semantic-indexer.md) for the full API.
 
@@ -540,7 +608,7 @@ Phase 7 implemented the model registry and BitNet server lifecycle per Architect
 - **Known deferred items:**
   - Full BitNet process management (spawning `bitnet.cpp`) — currently requires manual server start
   - First-run weight download with confirmation prompt (Architecture Section 19.9)
-  - CLI command wiring for `axiom models` and `axiom bitnet` commands (Phase 14)
+  - ~~CLI command wiring for `axiom models` and `axiom bitnet` commands~~ — resolved in Phase 14
   - Dynamic model pricing refresh from OpenRouter on broker construction (currently static at startup)
 
 See [Model Registry Reference](model-registry.md) for the full API.

@@ -99,7 +99,7 @@ Axiom project: my-app
 
 ## Engine Run Lifecycle (Phase 3)
 
-The engine provides run lifecycle methods that enforce state machine transitions and emit events. These are available programmatically through the engine API and will be wired to CLI commands in Phase 14:
+The engine provides run lifecycle methods that enforce state machine transitions and emit events. These are available programmatically through the engine API and are wired to CLI commands (`axiom run`, `axiom pause`, `axiom resume`, `axiom cancel`) since Phase 14:
 
 | Operation | State Transition | Event Emitted |
 |-----------|-----------------|---------------|
@@ -130,70 +130,137 @@ ECOs allow controlled environmental changes during execution without modifying t
 | Approve ECO | `proposed` -> `approved` | `eco_resolved` |
 | Reject ECO | `proposed` -> `rejected` | `eco_resolved` |
 
-## Planned Commands (Not Yet Implemented)
+## Implemented Commands (Phase 14)
 
-These commands are defined in the architecture and will be implemented in later phases:
+### `axiom run "<prompt>"`
 
-### Project Commands
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `axiom run "<prompt>"` | 14 | Start a new project run (engine SRS flow available since Phase 9) |
-| `axiom run --budget <usd> "<prompt>"` | 14 | Start with specific budget |
-| `axiom pause` | 14 | Pause execution (engine method available since Phase 3) |
-| `axiom resume` | 14 | Resume paused execution (engine method available since Phase 3) |
-| `axiom cancel` | 14 | Cancel execution (engine method available since Phase 3) |
-| `axiom export` | 14 | Export project state as JSON |
+Start a new project run: generate SRS, await approval, execute.
 
-### Interactive Session Commands
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `axiom` (no subcommand) | 15 | Launch interactive TUI |
-| `axiom tui` | 15 | Force TUI mode |
-| `axiom tui --plain` | 15 | Plain text renderer |
-| `axiom session list` | 15 | List resumable sessions |
-| `axiom session resume <id>` | 15 | Resume a session |
-| `axiom session export <id>` | 15 | Export session transcript |
+```bash
+axiom run "<prompt>" [--budget <usd>]
+```
 
-### Model Commands (service layer ready — Phase 7; CLI wiring in Phase 14)
-| Command | Service Status | Description |
-|---------|---------------|-------------|
-| `axiom models refresh` | `Registry.RefreshShipped/OpenRouter/BitNet` | Update model registry from all sources |
-| `axiom models list` | `Registry.List("", "")` | List all models (31 shipped) |
-| `axiom models list --tier <tier>` | `Registry.List(tier, "")` | Filter by tier (local, cheap, standard, premium) |
-| `axiom models list --family <family>` | `Registry.List("", family)` | Filter by model family |
-| `axiom models info <model-id>` | `Registry.Get(id)` | Show detailed model info |
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--budget` | config value | Budget in USD |
 
-### BitNet Commands (service layer ready — Phase 7; CLI wiring in Phase 14)
-| Command | Service Status | Description |
-|---------|---------------|-------------|
-| `axiom bitnet start` | `Service.Start` (manual-mode stub) | Start local inference server |
-| `axiom bitnet stop` | `Service.Stop` (manual-mode stub) | Stop local inference server |
-| `axiom bitnet status` | `Service.Status` | Show server status + loaded model count |
-| `axiom bitnet models` | `Service.ListModels` | List models loaded in BitNet server |
+**Example:**
+```bash
+$ axiom run "Build a REST API with user auth"
+Run created: a1b2c3d4-...
+  Status: draft_srs
+  Branch: axiom/my-project
+  Budget: $10.00
 
-### API & Tunnel Commands
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `axiom api start` | 16 | Start API server |
-| `axiom api stop` | 16 | Stop API server |
-| `axiom api token generate` | 16 | Generate auth token |
-| `axiom api token list` | 16 | List active tokens |
-| `axiom api token revoke <id>` | 16 | Revoke a token |
-| `axiom tunnel start` | 16 | Start Cloudflare tunnel |
-| `axiom tunnel stop` | 16 | Stop tunnel |
+Next: approve the SRS to begin execution.
+```
 
-### Index Commands (service layer ready — Phase 8; CLI wiring in Phase 14)
-| Command | Service Status | Description |
-|---------|---------------|-------------|
-| `axiom index refresh` | `Indexer.Index(ctx, dir)` | Full project re-index |
-| `axiom index query --type lookup_symbol --name <name>` | `Indexer.LookupSymbol(ctx, name, kind)` | Find symbols by name |
-| `axiom index query --type reverse_dependencies --name <name>` | `Indexer.ReverseDependencies(ctx, name)` | Find references to a symbol |
-| `axiom index query --type list_exports --package <path>` | `Indexer.ListExports(ctx, path)` | List package exports |
-| `axiom index query --type find_implementations --name <name>` | `Indexer.FindImplementations(ctx, name)` | Find interface implementations |
-| `axiom index query --type module_graph` | `Indexer.ModuleGraph(ctx, root)` | Show package dependency graph |
+### `axiom pause`
 
-### Utility Commands
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `axiom doctor` | 19 | System health check |
-| `axiom skill generate --runtime <rt>` | 17 | Generate skill file |
+Pause an active execution. Only works when a run is in `active` status.
+
+### `axiom resume`
+
+Resume a paused execution. Only works when a run is in `paused` status.
+
+### `axiom cancel`
+
+Cancel execution, kill containers, revert uncommitted changes. Works from `active` or `paused` status.
+
+### `axiom export`
+
+Export project state as human-readable JSON to stdout. Includes project info, active run, and tasks.
+
+### `axiom models refresh`
+
+Update model registry from shipped data, OpenRouter (if API key configured), and BitNet (if enabled).
+
+### `axiom models list`
+
+List all registered models in tabular format.
+
+```bash
+axiom models list [--tier <tier>] [--family <family>]
+```
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `--tier` | Filter by tier: local, cheap, standard, premium |
+| `--family` | Filter by model family |
+
+### `axiom models info <model-id>`
+
+Show detailed model information including pricing, capabilities, strengths, and weaknesses.
+
+### `axiom bitnet start`
+
+Start the local BitNet inference server.
+
+### `axiom bitnet stop`
+
+Stop the local BitNet inference server.
+
+### `axiom bitnet status`
+
+Show BitNet server status, endpoint, and loaded model count.
+
+### `axiom bitnet models`
+
+List models loaded in the BitNet server.
+
+### `axiom index refresh`
+
+Force a full re-index of the project's semantic index.
+
+### `axiom index query`
+
+Query the semantic index.
+
+```bash
+axiom index query --type <query_type> [--name <symbol>] [--package <pkg>]
+```
+
+**Query types:**
+| Type | Required flags | Description |
+|------|---------------|-------------|
+| `lookup_symbol` | `--name` | Find symbols by name |
+| `reverse_dependencies` | `--name` | Find references to a symbol |
+| `list_exports` | `--package` | List package exports |
+| `find_implementations` | `--name` | Find interface implementations |
+| `module_graph` | (none) | Show package dependency graph |
+
+## Stub Commands (Planned for Later Phases)
+
+These commands exist in the CLI surface but delegate to subsystems not yet implemented:
+
+### Interactive Session Commands (Phase 15)
+| Command | Description |
+|---------|-------------|
+| `axiom tui` | Launch interactive TUI |
+| `axiom tui --plain` | Plain text renderer |
+| `axiom session list` | List resumable sessions |
+| `axiom session resume <id>` | Resume a session |
+| `axiom session export <id>` | Export session transcript |
+
+### API & Tunnel Commands (Phase 16)
+| Command | Description |
+|---------|-------------|
+| `axiom api start` | Start API server |
+| `axiom api stop` | Stop API server |
+| `axiom api token generate [--scope <scope>]` | Generate auth token |
+| `axiom api token list` | List active tokens |
+| `axiom api token revoke <id>` | Revoke a token |
+| `axiom tunnel start` | Start Cloudflare tunnel |
+| `axiom tunnel stop` | Stop tunnel |
+
+### Skill Commands (Phase 17)
+| Command | Description |
+|---------|-------------|
+| `axiom skill generate --runtime <rt>` | Generate skill file |
+
+### Utility Commands (Phase 19)
+| Command | Description |
+|---------|-------------|
+| `axiom doctor` | System health check |

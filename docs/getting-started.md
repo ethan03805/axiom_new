@@ -201,13 +201,57 @@ A feature is not considered complete until both the implementation and its gener
 
 See [Test-Generation Separation Reference](test-generation.md) for implementation details.
 
+## CLI Command Reference
+
+After initialization, the full CLI surface is available. See [CLI Reference](cli-reference.md) for complete documentation.
+
+### Project Lifecycle
+
+```bash
+axiom run "Build a REST API with auth"        # Start a new run
+axiom run --budget 25 "Build a REST API"       # Start with specific budget
+axiom status                                   # Show project status
+axiom pause                                    # Pause execution
+axiom resume                                   # Resume paused execution
+axiom cancel                                   # Cancel execution
+axiom export                                   # Export project state as JSON
+```
+
+### Model Management
+
+```bash
+axiom models refresh                           # Update model registry
+axiom models list                              # List all models
+axiom models list --tier premium               # Filter by tier
+axiom models list --family claude              # Filter by family
+axiom models info <model-id>                   # Show model details
+```
+
+### BitNet (Local Inference)
+
+```bash
+axiom bitnet status                            # Show server status
+axiom bitnet start                             # Start server
+axiom bitnet stop                              # Stop server
+axiom bitnet models                            # List loaded models
+```
+
+### Semantic Index
+
+```bash
+axiom index refresh                            # Full re-index
+axiom index query --type lookup_symbol --name MyFunc
+axiom index query --type list_exports --package ./internal/config
+axiom index query --type module_graph
+```
+
 ## What's Next
 
-The following features are implemented in later phases:
+The following features are planned for later phases:
 
-- `axiom run "<prompt>"` — CLI command to start a run (Phase 14; engine SRS flow available since Phase 9)
-- `axiom tui` — interactive terminal UI (Phase 15)
-- `axiom api start` — external orchestration API (Phase 16)
-- `axiom doctor` — system health checks (Phase 19)
+- `axiom tui` — interactive terminal UI with sessions (Phase 15)
+- `axiom api start` — external orchestration REST + WebSocket API (Phase 16)
+- `axiom skill generate` — runtime skill generation for orchestrators (Phase 17)
+- `axiom doctor` — system health and dependency checks (Phase 19)
 
 See the [Architecture Document](../ARCHITECTURE.md) and [Implementation Plan](../IMPLEMENTATION_PLAN.md) for the full roadmap.
