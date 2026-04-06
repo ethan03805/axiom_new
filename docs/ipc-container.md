@@ -245,6 +245,21 @@ Container lifecycle events are emitted to the event bus:
 
 Details include `container_name`, `image`, and `exit_reason`.
 
+### Container Types
+
+Four container types are tracked via `state.ContainerType`:
+
+| Type | Used By | Purpose |
+|------|---------|---------|
+| `meeseeks` | Task execution | Produces code output + manifest.json |
+| `validator` | Validation sandbox (Phase 11) | Runs compile/lint/test checks in isolation |
+| `reviewer` | Review pipeline (Phase 11) | Evaluates Meeseeks output against TaskSpec |
+| `sub_orchestrator` | Sub-orchestrator | Manages sub-task decomposition |
+
+The validation sandbox and reviewer containers are built by `validation.BuildSandboxSpec` and `review.BuildReviewContainerSpec` respectively. Both use the same `engine.ContainerService` interface and Docker hardening flags as Meeseeks containers.
+
+See [Approval Pipeline Reference](approval-pipeline.md) for details on how these containers are orchestrated.
+
 ## Security Model
 
 The container isolation enforces these security boundaries from Architecture Section 12.7:

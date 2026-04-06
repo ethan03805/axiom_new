@@ -158,13 +158,26 @@ After the SRS is approved and the run becomes active, the orchestrator decompose
 
 See [Task System, Scheduler, and Locking Reference](task-scheduler.md) for details.
 
+## Approval Pipeline
+
+After a Meeseeks completes a task, its output passes through a multi-stage approval pipeline before reaching the project filesystem:
+
+1. **Manifest Validation** — the engine parses `manifest.json` from the Meeseeks output and validates all paths (no traversal, no symlinks, within scope, no oversized files)
+2. **Validation Sandbox** — the engine runs compile, lint, and test checks in an isolated Docker container with no network and no secrets
+3. **Reviewer Evaluation** — a separate LLM reviews the output against the original TaskSpec. For standard/premium tiers, the reviewer is from a different model family than the Meeseeks. Risky files (CI/CD, package manifests, Dockerfiles, auth code) always receive standard-tier or higher review
+4. **Orchestrator Gate** — final approval before the merge queue
+
+If any stage fails, the Meeseeks output is rejected and a fresh attempt is made with structured feedback.
+
+See [Approval Pipeline Reference](approval-pipeline.md) for implementation details.
+
 ## What's Next
 
 The following features are implemented in later phases:
 
 - `axiom run "<prompt>"` — CLI command to start a run (Phase 14; engine SRS flow available since Phase 9)
-- Manifest validation and review pipeline (Phase 11)
-- Merge queue (Phase 12)
+- Merge queue and integration checks (Phase 12)
+- Test-generation separation and convergence logic (Phase 13)
 - `axiom tui` — interactive terminal UI (Phase 15)
 - `axiom api start` — external orchestration API (Phase 16)
 - `axiom doctor` — system health checks (Phase 19)

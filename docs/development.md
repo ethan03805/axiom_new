@@ -92,20 +92,26 @@ axiom/
 │   ├── scheduler/          # Execution scheduler: dispatch loop, lock acquisition, waiter processing (Phase 10)
 │   │   └── scheduler.go    # Scheduler, Tick, ReleaseLocks, ModelSelector/SnapshotProvider interfaces, sortLockRequests
 │   │
+│   ├── manifest/           # Output manifest parsing and validation (Phase 11)
+│   │   └── manifest.go     # ParseManifest, ValidateManifest, ComputeArtifacts, path/scope/size checks
+│   │
+│   ├── validation/         # Validation sandbox orchestration (Phase 11)
+│   │   └── validation.go   # Service, BuildSandboxSpec, DetectLanguages, GetProfile, CheckResult aggregation
+│   │
+│   ├── review/             # Review pipeline (Phase 11)
+│   │   └── review.go       # Service, IsRiskyFile, ReviewerTier, SelectReviewerModel, ParseVerdict, OrchestratorGate
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
 │   ├── cli/                # CLI command helpers
 │   ├── doctor/             # System health checks
-│   ├── manifest/           # Output manifest parsing and validation
 │   ├── mergequeue/         # Serialized merge queue
 │   ├── orchestrator/       # Orchestrator lifecycle management
-│   ├── review/             # Review pipeline
 │   ├── security/           # Secret scanning, prompt safety, redaction
 │   ├── session/            # Session UX manager
 │   ├── tui/                # Bubble Tea terminal UI
-│   └── validation/         # Validation sandbox management
 ├── migrations/             # (Legacy location — migrations are now embedded)
 ├── testdata/               # Test fixture data
 ├── scripts/                # Build and utility scripts
@@ -253,6 +259,9 @@ Current test coverage by package:
 | `internal/index` | 24 | Full indexing (3), incremental indexing (2), exclusion rules (2), lookup_symbol (6), reverse_dependencies (1), list_exports (2), find_implementations (1), module_graph (2), multi-language (4), edge cases (3) |
 | `internal/task` | 24 | Single creation (5), batch creation (7), retry (2), escalation (3), blocking (1), HandleTaskFailure routing (3), scope expansion (2), per-tier counting (1) |
 | `internal/scheduler` | 15 | Dispatch ready tasks (3), lock acquisition (2), lock conflicts (2), concurrency limits (2), lock waiter processing (2), lock ordering (1), edge cases (3) |
+| `internal/manifest` | 23 | Parsing (5), validation checks (12), artifact hash tracking (4), path helpers (2) |
+| `internal/validation` | 22 | Language detection (6), profiles (5), sandbox spec (2), result aggregation (3), service orchestration (6) |
+| `internal/review` | 29 | Risky file detection (4), tier escalation (5), diversification (4), model selection (4), verdict parsing (4), container spec (1), service orchestration (4), orchestrator gate (2), FindRiskyFiles (1) |
 
 ### Test Patterns
 
@@ -298,7 +307,33 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 8 | Semantic Indexer and Typed Query API | Complete |
 | 9 | SRS, ECO, and Bootstrap-Mode Workflow | Complete |
 | 10 | Task System, Scheduler, and Locking | Complete |
-| 11-20 | Remaining phases | Not started |
+| 11 | Manifest Validation, Validation Sandbox, Review Pipeline | Complete |
+| 12-20 | Remaining phases | Not started |
+
+### Phase 11 Summary
+
+Phase 11 implemented the approval pipeline that protects the repo from bad output, covering Architecture Sections 10.4, 11, 13, and 14:
+
+- **Manifest parser and validator** (`manifest/manifest.go`) — `ParseManifest` parses the `manifest.json` emitted by Meeseeks with required field validation (task_id, base_snapshot). `ValidateManifest` performs all Stage 1 checks from Section 14.2: file existence in staging, no unlisted files, path canonicalization (no traversal, no absolute paths), symlink rejection via `os.Lstat`, non-regular file rejection, configurable file-size limits (default 50 MB), scope enforcement via prefix matching (nil means unrestricted), and duplicate path detection. Validation covers all path categories: added, modified, deleted, and renamed files.
+
+- **Artifact hash tracking** (`manifest/manifest.go`) — `ComputeArtifacts` computes SHA-256 hashes and file sizes for all file operations using streaming I/O (`io.Copy` into `sha256.New()`). Renames are first-class operations per Section 10.4 — they preserve both "from" and "to" paths through validation and audit logging, never degraded into delete-plus-add pairs. Each `ArtifactRecord` includes the `AttemptID` for persistence via `state.TaskArtifact`.
+
+- **Validation sandbox** (`validation/validation.go`) — `Service.RunChecks` orchestrates hermetic validation per Section 13.3: builds a container spec with hardcoded `network=none` (security invariant — ignores config), read-only project mount, read-write staging overlay, no secrets. Containers are always destroyed after checks complete (deferred cleanup). `DetectLanguages` inspects project directories for language markers with deterministic sorted output. `GetProfile` returns language-specific validation commands and dependency strategies per Section 13.5: Go (vendored modules), Node (`npm ci --ignore-scripts --offline`), Python (`pip install --no-index --find-links`), Rust (pre-populated registry). `FormatResults` produces human-readable summaries for inclusion in ReviewSpecs per Section 13.9.
+
+- **Reviewer pipeline** (`review/review.go`) — `Service.RunReview` orchestrates the full Stage 3 pipeline: detects risky files per Section 11.6 (CI/CD configs, package manifests, infrastructure, auth/security code, migrations, build scripts), escalates local/cheap tiers to standard when risky files are present, selects a reviewer model with family diversification for standard/premium tiers per Section 11.3 (falls back to same family when no alternative exists), starts a reviewer container with no network and no project filesystem access per Section 11.8, and parses the structured verdict output. `ParseVerdict` extracts APPROVE/REJECT with robust feedback capture — malformed output defaults to REJECT (fail-safe). For REJECT verdicts with no explicit feedback section, all post-verdict content is captured as feedback.
+
+- **Orchestrator gate** (`review/review.go`) — `OrchestratorGate` implements Section 14.2 Stage 4 as a pass-through for reviewer decisions. Future versions will add SRS cross-validation via IPC.
+
+- **Test patterns** — All 74 tests follow existing codebase conventions: pure `testing.T` assertions, `t.TempDir()` for filesystem isolation, simple mock structs for `engine.ContainerService`, `CheckRunner`, `ReviewRunner`, and `ModelSelector` interfaces. No external test dependencies.
+
+- **Known deferred items:**
+  - Actual container execution of validation checks (runner interface is abstracted; real Docker execution wired when task execution pipeline is complete)
+  - Warm sandbox pools (Section 13.8 — behind `warm_pool_enabled = false` feature flag)
+  - Integration sandbox with scoped secrets/network (Section 13.6 — config struct exists, not implemented)
+  - Batched review for local-tier tasks (Section 14.3)
+  - SRS cross-validation in orchestrator gate (requires orchestrator IPC — Phase 16)
+
+See [Approval Pipeline Reference](approval-pipeline.md) for the full API.
 
 ### Phase 10 Summary
 
