@@ -19,9 +19,9 @@ var verbose bool
 
 func main() {
 	root := &cobra.Command{
-		Use:   "axiom",
-		Short: "Axiom — AI software orchestration system",
-		Long:  "Axiom is a local-first AI software orchestration system that manages project lifecycle through isolated, disposable AI agents.",
+		Use:           "axiom",
+		Short:         "Axiom — AI software orchestration system",
+		Long:          "Axiom is a local-first AI software orchestration system that manages project lifecycle through isolated, disposable AI agents.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -60,6 +60,7 @@ func initCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Initialize a new Axiom project in the current directory",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
 			log := app.NewLogger(verbose)
 
 			cwd, err := os.Getwd()
@@ -113,12 +114,12 @@ func initCmd() *cobra.Command {
 				return fmt.Errorf("creating project record: %w", err)
 			}
 
-			fmt.Printf("Axiom project initialized in %s\n", cwd)
-			fmt.Printf("  Project: %s\n", name)
-			fmt.Printf("  Slug:    %s\n", slug)
-			fmt.Printf("  Config:  %s\n", project.ConfigPath(cwd))
-			fmt.Printf("  Branch:  %s\n", project.WorkBranch(slug))
-			fmt.Println("\nNext: run 'axiom run \"<prompt>\"' to start a project.")
+			fmt.Fprintf(out, "Axiom project initialized in %s\n", cwd)
+			fmt.Fprintf(out, "  Project: %s\n", name)
+			fmt.Fprintf(out, "  Slug:    %s\n", slug)
+			fmt.Fprintf(out, "  Config:  %s\n", project.ConfigPath(cwd))
+			fmt.Fprintf(out, "  Branch:  %s\n", project.WorkBranch(slug))
+			fmt.Fprintln(out, "\nNext: run 'axiom run \"<prompt>\"' to start a project.")
 			return nil
 		},
 	}
@@ -132,6 +133,7 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show project status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
 			log := app.NewLogger(verbose)
 
 			application, err := app.Open(log)
@@ -144,9 +146,9 @@ func statusCmd() *cobra.Command {
 			proj, err := application.DB.GetProjectByRootPath(application.ProjectRoot)
 			if err != nil {
 				if errors.Is(err, state.ErrNotFound) {
-					fmt.Printf("Axiom project: %s\n", application.Config.Project.Name)
-					fmt.Printf("  Root:   %s\n", application.ProjectRoot)
-					fmt.Printf("  Status: no project record (run 'axiom init' first)\n")
+					fmt.Fprintf(out, "Axiom project: %s\n", application.Config.Project.Name)
+					fmt.Fprintf(out, "  Root:   %s\n", application.ProjectRoot)
+					fmt.Fprintf(out, "  Status: no project record (run 'axiom init' first)\n")
 					return nil
 				}
 				return err
@@ -157,41 +159,41 @@ func statusCmd() *cobra.Command {
 				return fmt.Errorf("getting status: %w", err)
 			}
 
-			fmt.Printf("Axiom project: %s\n", status.ProjectName)
-			fmt.Printf("  Root:   %s\n", application.ProjectRoot)
+			fmt.Fprintf(out, "Axiom project: %s\n", status.ProjectName)
+			fmt.Fprintf(out, "  Root:   %s\n", application.ProjectRoot)
 
 			if status.Run == nil {
-				fmt.Printf("  Status: idle (no active run)\n")
-				fmt.Printf("  Budget: $%.2f (configured maximum)\n", application.Config.Budget.MaxUSD)
+				fmt.Fprintf(out, "  Status: idle (no active run)\n")
+				fmt.Fprintf(out, "  Budget: $%.2f (configured maximum)\n", application.Config.Budget.MaxUSD)
 			} else {
-				fmt.Printf("  Run:    %s\n", status.Run.ID)
-				fmt.Printf("  Status: %s\n", status.Run.Status)
-				fmt.Printf("  Branch: %s\n", status.Run.WorkBranch)
-				fmt.Printf("  Budget: $%.2f / $%.2f",
+				fmt.Fprintf(out, "  Run:    %s\n", status.Run.ID)
+				fmt.Fprintf(out, "  Status: %s\n", status.Run.Status)
+				fmt.Fprintf(out, "  Branch: %s\n", status.Run.WorkBranch)
+				fmt.Fprintf(out, "  Budget: $%.2f / $%.2f",
 					status.Budget.SpentUSD, status.Budget.MaxUSD)
 				if status.Budget.WarnReached {
-					fmt.Printf(" [WARNING: %d%% threshold reached]", status.Budget.WarnPercent)
+					fmt.Fprintf(out, " [WARNING: %d%% threshold reached]", status.Budget.WarnPercent)
 				}
-				fmt.Println()
+				fmt.Fprintln(out)
 
 				if status.Tasks.Total > 0 {
-					fmt.Printf("  Tasks:  %d total", status.Tasks.Total)
+					fmt.Fprintf(out, "  Tasks:  %d total", status.Tasks.Total)
 					if status.Tasks.Done > 0 {
-						fmt.Printf(", %d done", status.Tasks.Done)
+						fmt.Fprintf(out, ", %d done", status.Tasks.Done)
 					}
 					if status.Tasks.InProgress > 0 {
-						fmt.Printf(", %d running", status.Tasks.InProgress)
+						fmt.Fprintf(out, ", %d running", status.Tasks.InProgress)
 					}
 					if status.Tasks.Queued > 0 {
-						fmt.Printf(", %d queued", status.Tasks.Queued)
+						fmt.Fprintf(out, ", %d queued", status.Tasks.Queued)
 					}
 					if status.Tasks.Failed > 0 {
-						fmt.Printf(", %d failed", status.Tasks.Failed)
+						fmt.Fprintf(out, ", %d failed", status.Tasks.Failed)
 					}
 					if status.Tasks.Blocked > 0 {
-						fmt.Printf(", %d blocked", status.Tasks.Blocked)
+						fmt.Fprintf(out, ", %d blocked", status.Tasks.Blocked)
 					}
-					fmt.Println()
+					fmt.Fprintln(out)
 				}
 			}
 			return nil

@@ -285,7 +285,9 @@ Current test coverage by package:
 
 | Package | Tests | Coverage |
 |---------|-------|----------|
+| `cmd/axiom` | 2 | Fixture-backed Cobra integration coverage for `init`, `run`, and `status` flows across greenfield and existing-project scenarios |
 | `internal/version` | 2 | Version string formatting |
+| `internal/app` | 1 | Project discovery from subdirectories, startup recovery invocation, registry/BitNet/engine composition |
 | `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
 | `internal/state` | 123 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (17: create/get/list/activity/messages/uniqueness/summaries/input-history + Phase 15: update-mode/update-run-id/get-summaries/input-history-by-project/message-count/delete-before/latest-session), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22), api tokens (10: create/duplicate-hash/get-by-hash/not-found/list/revoke/revoke-not-found/update-last-used/list-revoked/delete-expired) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
@@ -298,6 +300,7 @@ Current test coverage by package:
 | `internal/container` | 17 | Container naming (2), hardening flags (7), start/stop lifecycle (4), list/cleanup (3), interface compliance (1) |
 | `internal/inference` | 59 | Budget enforcer (11), rate limiter (6), OpenRouter provider (11), BitNet provider (7), broker integration (24) |
 | `internal/models` | 19 | Shipped loader (3), OpenRouter fetcher (2), BitNet scanner (2), registry service (7), merge enrichment (1), combined filtering (1), broker maps (1), performance preservation (1), adapter (1) |
+| `internal/observability` | 2 | Prompt-log persistence, redaction, disabled-mode no-op behavior |
 | `internal/bitnet` | 14 | Service creation (1), status up/down (2), model listing (2), enabled/disabled (1), base URL (1), managed start/stop lifecycle (4), weight dir (1), status fields (2) |
 | `internal/index` | 24 | Full indexing (3), incremental indexing (2), exclusion rules (2), lookup_symbol (6), reverse_dependencies (1), list_exports (2), find_implementations (1), module_graph (2), multi-language (4), edge cases (3) |
 | `internal/task` | 24 | Single creation (5), batch creation (7), retry (2), escalation (3), blocking (1), HandleTaskFailure routing (3), scope expansion (2), per-tier counting (1) |
@@ -310,6 +313,7 @@ Current test coverage by package:
 | `internal/tui` | 29 | Model creation (2), view rendering (3), input handling (2), slash commands (6), overlay (1), status bar (1), task rail (1), window resize (1), transcript (1), submit input (2), plain renderer (7) |
 | `internal/cli` | 80 | Command registration (12), run actions (18), export (5), models (7), bitnet (6), index (11), session commands (7), skill commands (2), API/tunnel compatibility plus doctor command coverage (12) |
 | `internal/doctor` | 2 | Dependency failure reporting, resource-pressure warning, cache readiness, secret-scanner checks |
+| `internal/release` | 2 | Release bundle assembly, manifest generation, default config/test-matrix packaging |
 | `internal/skill` | 4 | Runtime-specific artifact generation for claw, claude-code, codex, and opencode; config-sensitive regeneration; runtime-native guardrails; invalid runtime rejection |
 | `internal/api` | 49 | Auth (10: valid/invalid/expired/revoked/bad-prefix/scopes/generation/hashing), rate limiting (6: under/over/per-token/disabled/IP-allowlist), handlers (11: status/tasks/attempts/costs/events/models/pause/resume/cancel/SRS/tokens), WebSocket (4: event-stream/control/invalid-type/idempotency), server (6: start-stop/auth-required/authed-request/audit/health/IP), tunnel (3: construct/stop/URL) |
 
@@ -325,6 +329,7 @@ Current test coverage by package:
 - Model registry tests use `httptest.NewServer` for mock OpenRouter and BitNet API endpoints
 - BitNet service tests use `httptest.NewServer` with a test URL override for mock health and model endpoints
 - Indexer tests use embedded fixture files in `internal/index/testdata/` with Go, TypeScript, Python, and Rust source files
+- Phase 20 integration tests use repo fixtures in `testdata/fixtures/` and materialize them as real temporary git repositories
 - CLI tests create a full `app.App` with real DB, engine, registry, and BitNet service in temp directories, then call action functions directly (not through cobra) for deterministic output verification
 - No external service dependencies in current tests (Docker, network, inference are all mocked)
 
@@ -367,7 +372,7 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 17 | Runtime Skill Generation | Complete |
 | 18 | Security, Secret Handling, and Prompt Safety | Complete |
 | 19 | Crash Recovery, Diagnostics, and Hardening | Complete |
-| 20 | Stabilization, Test Matrix, and Release Packaging | Not started |
+| 20 | Stabilization, Test Matrix, and Release Packaging | In progress |
 
 ### Phase 19 Summary
 
@@ -382,6 +387,23 @@ Phase 19 implemented the restart-hardening and operator diagnostics layer from A
 - **Managed BitNet lifecycle** (`bitnet/service.go`) - BitNet can now be launched and stopped by Axiom when `[bitnet].command` is configured, with persisted process state, health polling, and explicit fallback to manual setup when no managed command is configured.
 
 - **Config and discovery hardening** (`config/config.go`, `project/project.go`) - Layered config now correctly merges observability and BitNet overrides, missing config files no longer surface as false errors, and project discovery no longer mistakes the global `~/.axiom/` directory for a project root.
+
+### Phase 20 Summary
+
+Phase 20 has started the stabilization and release hardening pass:
+
+- **Fixture repositories** (`testdata/fixtures/`, `internal/testfixtures/`) - Added reusable greenfield and existing-project fixtures that are materialized into real temporary git repositories for higher-level flow tests.
+
+- **Release packaging** (`internal/release/`) - Added a release-bundle builder that assembles the compiled binary, generated default config template, docs, Docker assets, fixture repos, a markdown test matrix, and a JSON manifest into a single candidate bundle directory.
+
+- **Higher-level integration coverage** (`cmd/axiom/phase20_integration_test.go`) - Added fixture-backed Cobra tests covering `axiom init`, `axiom run`, and `axiom status` across both greenfield and existing-project scenarios.
+
+- **Missing package coverage** (`internal/app/app_test.go`, `internal/observability/promptlog_test.go`) - Added tests for composition-root discovery/recovery behavior and prompt-log persistence/redaction semantics.
+
+- **Known remaining gaps**
+  - The engine's merge-queue adapter still uses a stub integration validator. The `internal/mergequeue/` package is well tested in isolation, but end-to-end runtime wiring to a real validation runner remains outstanding.
+  - `engine.CreateRun` persists `work_branch` metadata but does not yet call the git package's `SetupWorkBranch`, so branch checkout and dirty-tree enforcement are not active in the live `axiom run` path.
+  - The test-generation service is implemented, but automatic `CreateTestTask` / `MarkConverged` hooks are still explicit/orchestrator-driven rather than engine-wired.
 
 ### Phase 18 Summary
 

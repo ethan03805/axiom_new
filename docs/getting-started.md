@@ -157,17 +157,17 @@ Prompt logs are written only when `observability.log_prompts = true`.
 
 ## Git Branch Strategy
 
-When a run starts, Axiom creates a dedicated work branch:
+Architecture target branch names follow:
 
 ```
 axiom/<project-slug>
 ```
 
-All task commits are made to this branch. Your current branch is never modified during execution. When the run completes, you review the full diff and merge at your discretion. Axiom never pushes or merges to remote automatically.
+The branch name is deterministic — given the same project slug, the branch name is always the same. The `internal/gitops.Manager` already implements clean-tree validation plus create-or-resume work-branch setup for this workflow.
 
-The work branch is deterministic — given the same project slug, the branch name is always the same. If a run is resumed after a pause or crash, Axiom detects the existing branch and checks it out.
+Current CLI/runtime behavior is narrower: `axiom run` persists the intended `work_branch` in run state and shows it in status output, but it does not yet automatically create or check out that branch.
 
-**Important:** Axiom requires a clean working tree before starting a run. Commit or stash any uncommitted changes first.
+Current CLI/runtime behavior also does not yet reject dirty working trees at run start. Keep the tree clean manually if you want to stay aligned with the architecture's intended workflow.
 
 See [Git Operations Reference](git-operations.md) for implementation details.
 
@@ -224,26 +224,30 @@ After a task's output passes through the approval pipeline (manifest validation,
 1. Validates the task's `base_snapshot` against the current HEAD
 2. If stale, checks for real file conflicts using `git diff`
 3. Applies the Meeseeks output to the project directory
-4. Runs project-wide integration checks (build, test, lint)
+4. The package-level merge queue supports project-wide integration checks (build, test, lint)
 5. On success: commits with an architecture-compliant message, re-indexes changed files, releases write-set locks, and marks the task done
 6. On failure: reverts all applied files, requeues the task with structured failure feedback
 
 Only one merge is processed at a time, preventing concurrent commit conflicts.
 
+Current implementation note: `internal/mergequeue` and `internal/validation` cover this flow at the package level, but the engine adapter in `internal/engine/mergequeue.go` still uses a stub validator. End-to-end runtime merge processing therefore does not yet execute real build/test/lint checks.
+
 See [Approval Pipeline Reference](approval-pipeline.md) for implementation details.
 
 ## Test-Generation Separation
 
-After an implementation task merges, Axiom creates a separate test-generation task from a **different model family** (Architecture Section 11.5). This prevents circular validation — tests are not meaningful if the same model wrote both the code and the tests.
+The test-generation service enforces the separate-task, different-model-family workflow from Architecture Section 11.5. This prevents circular validation — tests are not meaningful if the same model wrote both the code and the tests.
 
 The lifecycle:
 1. Implementation merges successfully via the merge queue.
-2. A test-generation task is created, dependent on the implementation, with the implementation's model family excluded.
+2. Orchestration code calls the test-generation service to create a dependent test task with the implementation's model family excluded.
 3. The test task is dispatched to a different model family (e.g., if implementation used Claude, tests use GPT).
 4. If tests pass, the feature is marked as converged (done).
 5. If tests fail, an implementation-fix task is created with the failing test output as context, and the fix goes through the full approval pipeline.
 
 A feature is not considered complete until both the implementation and its generated tests converge. This is tracked via convergence pairs in the database.
+
+Current implementation note: the service API and scheduler family-exclusion logic are implemented, but automatic post-merge `CreateTestTask` / `MarkConverged` calls are not yet wired into the engine runtime.
 
 See [Test-Generation Separation Reference](test-generation.md) for implementation details.
 
@@ -398,6 +402,8 @@ Available now:
 - [Security, Secret Handling, and Prompt Safety](security-prompt-safety.md) - secret scanning, local-only routing defaults, and prompt-safe spec packaging
 
 - [Operations & Diagnostics Reference](operations-diagnostics.md) - startup recovery, doctor checks, prompt logs, and managed BitNet operations
+
+- [Release Packaging Reference](release-packaging.md) - candidate bundle layout, fixture repos, manifest structure, and test-matrix packaging
 
 See the [Architecture Document](../ARCHITECTURE.md) and [Implementation Plan](../IMPLEMENTATION_PLAN.md) for the full roadmap.
 

@@ -12,6 +12,8 @@ The test-generation system enforces architecture-mandated independence between i
 2. **Convergence State Layer** (`internal/state/convergence.go`) -- Persists the relationship between implementation, test, and fix tasks with lifecycle tracking.
 3. **Scheduler Integration** (`internal/scheduler/`) -- The `FamilyExcluder` interface ensures test-type tasks are dispatched with a different model family than the implementation.
 
+Current runtime note: the service and scheduler-family-exclusion pieces are implemented. Automatic merge-success hooks that call `CreateTestTask`, plus automatic completion hooks that call `MarkConverged`, are still explicit/orchestrator-driven rather than engine-wired.
+
 ## Architecture Principles
 
 Per Architecture Section 11.5:
@@ -35,7 +37,7 @@ svc := testgen.New(db, eventBus, logger)
 
 ### Creating Test Tasks
 
-After an implementation task merges successfully via the merge queue:
+When orchestration code decides to start test generation for a completed implementation task:
 
 ```go
 testTask, err := svc.CreateTestTask(ctx, "impl-task-001")
@@ -105,6 +107,8 @@ err := svc.MarkConverged(ctx, "impl-task-001")
 
 Validates the test task is done before transitioning to `converged`. Sets the `converged_at` timestamp. Emits a `testgen_converged` event.
 
+Current runtime note: this method is not yet invoked automatically when a test task finishes; orchestration code must call it explicitly.
+
 ### Feature Completion Check
 
 ```go
@@ -126,34 +130,36 @@ Emits a `testgen_blocked` event. The orchestrator may restructure the task.
 
 ## Convergence Lifecycle
 
-```
-Implementation task merges successfully
-  │
-  ├─→ CreateTestTask(implTaskID)
-  │     Creates test task + convergence pair (status: testing)
-  │
-  ├─→ Scheduler dispatches test task with excludeFamily
-  │     Different model family from implementation
-  │
-  ├─→ Test task succeeds (status: done)
-  │     ├─→ MarkConverged(implTaskID)
-  │     │     Convergence achieved (status: converged)
-  │     │     Feature is done
-  │     │
-  │     └─→ (no action needed, waiting for explicit mark)
-  │
-  └─→ Test task fails (status: failed)
-        ├─→ HandleTestFailure(testTaskID, failureOutput)
-        │     Creates fix task (status: fixing, iteration++)
-        │     Fix task goes through normal approval pipeline
-        │
-        ├─→ Fix task merges → new test run needed
-        │     (orchestrator creates new test task cycle)
-        │
-        └─→ Fix exhausts retries
-              ├─→ MarkBlocked(implTaskID)
-              │     Convergence blocked
-              └─→ Orchestrator restructures
+Current runtime note: this is the intended service lifecycle. The merge queue and task-completion paths do not yet trigger these calls automatically.
+
+```text
+Implementation task has merged successfully
+  |
+  +-> Orchestration code calls CreateTestTask(implTaskID)
+  |    Creates test task + convergence pair (status: testing)
+  |
+  +-> Scheduler dispatches test task with excludeFamily
+  |    Different model family from implementation
+  |
+  +-> Test task succeeds (status: done)
+  |    +-> Orchestration code calls MarkConverged(implTaskID)
+  |    |    Convergence achieved (status: converged)
+  |    |    Feature is done
+  |    |
+  |    +-> (no automatic hook yet; waits for explicit mark)
+  |
+  +-> Test task fails (status: failed)
+       +-> HandleTestFailure(testTaskID, failureOutput)
+       |    Creates fix task (status: fixing, iteration++)
+       |    Fix task goes through normal approval pipeline
+       |
+       +-> Fix task merges -> new test run needed
+       |    (orchestration code creates the next test task cycle)
+       |
+       +-> Fix exhausts retries
+            +-> MarkBlocked(implTaskID)
+            |    Convergence blocked
+            +-> Orchestrator restructures
 ```
 
 ## Database Schema
@@ -247,7 +253,7 @@ Four new authoritative events (persisted to SQLite):
 | `TestGetExcludeFamily_ReturnsImplModelFamily` | Returns anthropic/openai/etc. for test tasks |
 | `TestGetExcludeFamily_ReturnsEmptyForNonTestTask` | Non-test tasks return empty |
 | `TestHandleTestFailure_CreatesFixTask` | Fix task created with correct type and dependency |
-| `TestHandleTestFailure_UpdatesConvergencePair` | Convergence pair status → fixing, iteration incremented |
+| `TestHandleTestFailure_UpdatesConvergencePair` | Convergence pair status -> fixing, iteration incremented |
 | `TestHandleTestFailure_RejectsNonFailedTestTask` | Test task must be failed |
 | `TestHandleTestFailure_RejectsNonTestTask` | Only test tasks can trigger fix creation |
 | `TestHandleTestFailure_FixTaskDescriptionContainsFailureOutput` | Fix task description includes failure context |
@@ -265,4 +271,4 @@ Four new authoritative events (persisted to SQLite):
 | **Scheduler Integration (3 tests)** | |
 | `TestTick_TestTaskUsesExcludeFamily` | Test tasks pass impl model family to SelectModel |
 | `TestTick_ImplTaskUsesEmptyExcludeFamily` | Impl tasks pass empty excludeFamily |
-| `TestTick_NilFamilyExcluder` | Backward compatible — nil excluder works |
+| `TestTick_NilFamilyExcluder` | Backward compatible - nil excluder works |

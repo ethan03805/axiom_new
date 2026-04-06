@@ -135,7 +135,7 @@ ECOs allow controlled environmental changes during execution without modifying t
 
 ### `axiom run "<prompt>"`
 
-Start a new project run: generate SRS, await approval, execute.
+Create a new project run record in `draft_srs` status.
 
 ```bash
 axiom run "<prompt>" [--budget <usd>]
@@ -157,17 +157,21 @@ Run created: a1b2c3d4-...
 Next: approve the SRS to begin execution.
 ```
 
+**Current implementation note:** the command currently persists the run, budget ceiling, base branch, and target `work_branch`, then emits `run_created`. It does not yet generate the SRS, start task execution, set up the work branch, or reject a dirty working tree automatically. The prompt argument is accepted for CLI compatibility but is not yet consumed by the engine runtime.
+
 ### `axiom pause`
 
-Pause an active execution. Only works when a run is in `active` status.
+Transition an active run to `paused`. Only works when a run is currently in `active` status.
 
 ### `axiom resume`
 
-Resume a paused execution. Only works when a run is in `paused` status.
+Transition a paused run back to `active`. Only works when a run is currently in `paused` status.
 
 ### `axiom cancel`
 
-Cancel execution, kill containers, revert uncommitted changes. Works from `active` or `paused` status.
+Transition a run to `cancelled`. Works from `active` or `paused` status.
+
+**Current implementation note:** this updates run state and emits `run_cancelled`, but container shutdown and git cleanup are not yet wired into the command path.
 
 ### `axiom export`
 
@@ -441,3 +445,7 @@ Phase 19 Doctor Report
 The current implementation always prints the full report; for scripting, inspect the per-line status labels.
 
 See [Operations & Diagnostics Reference](operations-diagnostics.md) for recovery, prompt logs, and BitNet managed-mode behavior.
+
+## Release Packaging
+
+Phase 20 release packaging is currently a library/build-tool capability, not a CLI command. See [Release Packaging Reference](release-packaging.md) for `internal/release.BuildBundle`, fixture repositories, test-matrix packaging, and manifest output.

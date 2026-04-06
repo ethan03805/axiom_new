@@ -8,6 +8,8 @@ Axiom's git operations are handled by the `internal/gitops` package. All git int
 - **No remote operations** — The Manager has no push, pull, fetch, or remote-related methods. Axiom never modifies remotes automatically (Architecture Section 23.4).
 - **Deterministic branching** — Work branches are created at the exact HEAD of the base branch with a predictable name.
 
+Current runtime note: the git package already supports deterministic branch setup and dirty-tree validation, but `engine.CreateRun` currently records the intended work branch in state without yet invoking `SetupWorkBranch`.
+
 ## Manager
 
 ```go
@@ -52,6 +54,8 @@ err := mgr.SetupWorkBranch(dir, "main", "axiom/my-project")
 
 Fails with an error if the working tree has uncommitted changes.
 
+Current engine note: this is the intended high-level entry point for run startup, but the live `axiom run` path does not yet call it automatically.
+
 ## Snapshots
 
 | Method | Description |
@@ -73,7 +77,7 @@ sha, err := mgr.Snapshot(dir)
 | `IsDirty(dir) (bool, error)` | Reports whether the working tree has uncommitted changes (staged, unstaged, or untracked) |
 | `ValidateClean(dir) error` | Returns an actionable error if the working tree is dirty |
 
-The engine refuses to start a run on a dirty working tree (Architecture Section 28.2). `ValidateClean` is called by `SetupWorkBranch` automatically.
+`ValidateClean` is called by `SetupWorkBranch` automatically. The manager therefore supports the architecture's dirty-tree requirement, but the current `axiom run` command does not yet invoke this path.
 
 ## Commit Operations
 
@@ -194,6 +198,8 @@ eng, err := engine.New(engine.Options{
     Git:     gitops.New(logger),
 })
 ```
+
+Current engine note: the live engine uses this interface for snapshots, diffing, and merge-queue conflict detection. Work-branch creation and cancellation cleanup are implemented in the git package but not yet triggered by `CreateRun` / `CancelRun`.
 
 ## Test Coverage
 

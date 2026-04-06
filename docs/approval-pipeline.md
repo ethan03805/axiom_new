@@ -1,6 +1,11 @@
 # Approval Pipeline Reference
 
-The approval pipeline is the mechanism by which Meeseeks output moves from container staging to the project filesystem. No file reaches the project filesystem without passing through the full pipeline. All pipeline operations are executed by the Trusted Engine.
+The approval pipeline is the mechanism by which Meeseeks output moves from container staging to the project filesystem. The package-level implementation models the full five-stage architecture pipeline, and all pipeline operations are intended to be executed by the Trusted Engine.
+
+Current runtime note: the supporting packages for manifest validation, sandbox validation, review, merge processing, and test-generation follow-on work exist and are tested, but the live engine still has two notable wiring gaps:
+
+- the merge-queue adapter currently uses a stub validator instead of real build/test/lint execution
+- automatic post-merge test-task creation is not yet invoked by the engine
 
 Per Architecture Section 14.2, the pipeline has five stages:
 
@@ -349,6 +354,8 @@ type GateResult struct {
 
 The serialized merge queue ensures every commit is validated against the actual current project state. Only one merge is processed at a time, preventing stale-context conflicts.
 
+Current engine note: the `internal/mergequeue` package supports validator injection and handles integration failures correctly when given a real validator. The engine adapter in `internal/engine/mergequeue.go` currently returns success from a stub validator, so runtime merges do not yet execute real integration checks.
+
 ### Merge Process (Architecture Section 16.4)
 
 ```
@@ -417,7 +424,7 @@ The retry/escalation logic is handled by the task service (`internal/task/`) and
 
 ## Post-Merge: Test-Generation Separation (Phase 13)
 
-After an implementation task successfully merges, the test-generation system (Architecture Section 11.5) creates a separate test task from a different model family:
+After an implementation task successfully merges, the test-generation system (Architecture Section 11.5) provides the service used to create a separate test task from a different model family:
 
 1. `testgen.CreateTestTask(implTaskID)` creates a test-type task dependent on the implementation.
 2. The implementation's model family is recorded in a `convergence_pairs` record for exclusion.
@@ -425,6 +432,8 @@ After an implementation task successfully merges, the test-generation system (Ar
 4. If tests fail, `testgen.HandleTestFailure()` creates an implementation-fix task with failure context.
 5. The fix task goes through the full approval pipeline (manifest → validation → review → merge).
 6. A feature is not considered done until `testgen.IsFeatureDone()` returns true (convergence achieved).
+
+Current engine note: the service and scheduler hooks are implemented, but merge-queue success does not yet call `CreateTestTask` automatically.
 
 See [Test-Generation Separation Reference](test-generation.md) for the full API.
 
