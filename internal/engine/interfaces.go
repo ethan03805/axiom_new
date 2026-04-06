@@ -9,6 +9,9 @@ type GitService interface {
 	CreateBranch(dir, name string) error
 	CurrentHEAD(dir string) (string, error)
 	IsDirty(dir string) (bool, error)
+	AddFiles(dir string, files []string) error
+	Commit(dir string, message string) (string, error)
+	ChangedFilesSince(dir, sinceRef string) ([]string, error)
 }
 
 // ContainerSpec describes a container to be started.

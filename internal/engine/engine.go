@@ -9,6 +9,7 @@ import (
 
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/events"
+	"github.com/openaxiom/axiom/internal/mergequeue"
 	"github.com/openaxiom/axiom/internal/scheduler"
 	"github.com/openaxiom/axiom/internal/state"
 )
@@ -42,8 +43,9 @@ type Engine struct {
 	index     IndexService
 	models    ModelService
 
-	sched   *scheduler.Scheduler
-	workers *WorkerPool
+	sched      *scheduler.Scheduler
+	mergeQueue *mergequeue.Queue
+	workers    *WorkerPool
 
 	mu      sync.Mutex
 	running bool
@@ -90,6 +92,18 @@ func New(opts Options) (*Engine, error) {
 		SnapshotProvider: &engineSnapshotProvider{git: opts.Git, rootDir: opts.RootDir},
 	})
 
+	// Create merge queue with engine-provided adapters
+	e.mergeQueue = mergequeue.New(mergequeue.Options{
+		ProjectDir: opts.RootDir,
+		Log:        opts.Log,
+		Git:        &mergeQueueGitAdapter{git: opts.Git, rootDir: opts.RootDir},
+		Validator:  &mergeQueueValidatorAdapter{log: opts.Log},
+		Indexer:    &mergeQueueIndexAdapter{index: opts.Index},
+		Locks:      &mergeQueueLockAdapter{sched: e.sched},
+		Tasks:      &mergeQueueTaskAdapter{db: opts.DB, sched: e.sched, log: opts.Log},
+		Events:     &mergeQueueEventAdapter{bus: bus},
+	})
+
 	return e, nil
 }
 
@@ -106,8 +120,8 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.workers = NewWorkerPool(e.ctx, e.log)
 
 	e.workers.Register("scheduler", e.schedulerLoop, 500*time.Millisecond)
+	e.workers.Register("merge-queue", e.mergeQueueLoop, 500*time.Millisecond)
 	// Future phases will register additional workers:
-	// e.workers.Register("merge-queue", e.mergeQueueLoop, 500*time.Millisecond)
 	// e.workers.Register("cleanup", e.cleanupLoop, 30*time.Second)
 
 	e.workers.Start()

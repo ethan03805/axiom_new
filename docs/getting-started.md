@@ -171,12 +171,26 @@ If any stage fails, the Meeseeks output is rejected and a fresh attempt is made 
 
 See [Approval Pipeline Reference](approval-pipeline.md) for implementation details.
 
+## Merge Queue
+
+After a task's output passes through the approval pipeline (manifest validation, validation sandbox, reviewer evaluation, orchestrator gate), it enters the serialized merge queue. The merge queue ensures every commit is validated against the actual current project state:
+
+1. Validates the task's `base_snapshot` against the current HEAD
+2. If stale, checks for real file conflicts using `git diff`
+3. Applies the Meeseeks output to the project directory
+4. Runs project-wide integration checks (build, test, lint)
+5. On success: commits with an architecture-compliant message, re-indexes changed files, releases write-set locks, and marks the task done
+6. On failure: reverts all applied files, requeues the task with structured failure feedback
+
+Only one merge is processed at a time, preventing concurrent commit conflicts.
+
+See [Approval Pipeline Reference](approval-pipeline.md) for implementation details.
+
 ## What's Next
 
 The following features are implemented in later phases:
 
 - `axiom run "<prompt>"` — CLI command to start a run (Phase 14; engine SRS flow available since Phase 9)
-- Merge queue and integration checks (Phase 12)
 - Test-generation separation and convergence logic (Phase 13)
 - `axiom tui` — interactive terminal UI (Phase 15)
 - `axiom api start` — external orchestration API (Phase 16)

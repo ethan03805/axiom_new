@@ -287,6 +287,21 @@ func (m *Manager) CancelCleanup(dir, baseBranch string) error {
 	return nil
 }
 
+// ChangedFilesSince returns the list of file paths that have changed
+// between the given ref (commit SHA) and the current HEAD.
+// Used by the merge queue to detect actual conflicts for stale snapshots
+// (Architecture Section 16.2).
+func (m *Manager) ChangedFilesSince(dir, sinceRef string) ([]string, error) {
+	out, err := m.git(dir, "diff", "--name-only", sinceRef, "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("diffing %s..HEAD: %w", sinceRef, err)
+	}
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}
+
 // git runs a git command in the given directory and returns trimmed stdout.
 func (m *Manager) git(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)

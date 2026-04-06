@@ -17,6 +17,7 @@ axiom/
 │   │   ├── srs.go          # SRS lifecycle (SubmitSRS, ApproveSRS, RejectSRS) (Phase 9)
 │   │   ├── eco.go          # ECO lifecycle (ProposeECO, ApproveECO, RejectECO) (Phase 9)
 │   │   ├── scheduler.go    # Scheduler worker loop + engine adapters (engineModelSelector, engineSnapshotProvider) (Phase 10)
+│   │   ├── mergequeue.go   # Merge queue worker loop + engine adapters (git, validator, indexer, lock, task, event) (Phase 12)
 │   │   ├── status.go       # Status projections (RunStatusProjection, TaskSummary, BudgetSummary)
 │   │   └── worker.go       # Background worker pool (register, start, stop periodic workers)
 │   ├── events/             # Central event bus (Phase 3)
@@ -101,13 +102,15 @@ axiom/
 │   ├── review/             # Review pipeline (Phase 11)
 │   │   └── review.go       # Service, IsRiskyFile, ReviewerTier, SelectReviewerModel, ParseVerdict, OrchestratorGate
 │   │
+│   ├── mergequeue/         # Serialized merge queue (Phase 12)
+│   │   └── mergequeue.go   # Queue, MergeItem, Tick, Enqueue, conflict detection, file apply/revert, commit
+│   │
 │   │   --- Future packages (directories scaffolded, not yet implemented) ---
 │   ├── api/                # REST + WebSocket API server
 │   ├── audit/              # Audit logging
 │   ├── budget/             # (Budget logic is in inference/budget.go)
 │   ├── cli/                # CLI command helpers
 │   ├── doctor/             # System health checks
-│   ├── mergequeue/         # Serialized merge queue
 │   ├── orchestrator/       # Orchestrator lifecycle management
 │   ├── security/           # Secret scanning, prompt safety, redaction
 │   ├── session/            # Session UX manager
@@ -262,6 +265,7 @@ Current test coverage by package:
 | `internal/manifest` | 23 | Parsing (5), validation checks (12), artifact hash tracking (4), path helpers (2) |
 | `internal/validation` | 22 | Language detection (6), profiles (5), sandbox spec (2), result aggregation (3), service orchestration (6) |
 | `internal/review` | 29 | Risky file detection (4), tier escalation (5), diversification (4), model selection (4), verdict parsing (4), container spec (1), service orchestration (4), orchestrator gate (2), FindRiskyFiles (1) |
+| `internal/mergequeue` | 20 | Empty queue (1), queue length (1), clean merge (2), stale snapshot (2), integration failure (2), file operations (2), serialization (1), events (3), commit failure (1), indexer failure (1), affected files (1), git staging (1), file revert (2), context cancellation (1) |
 
 ### Test Patterns
 
@@ -308,7 +312,38 @@ See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete specification.
 | 9 | SRS, ECO, and Bootstrap-Mode Workflow | Complete |
 | 10 | Task System, Scheduler, and Locking | Complete |
 | 11 | Manifest Validation, Validation Sandbox, Review Pipeline | Complete |
-| 12-20 | Remaining phases | Not started |
+| 12 | Merge Queue and Integration Checks | Complete |
+| 13-20 | Remaining phases | Not started |
+
+### Phase 12 Summary
+
+Phase 12 implemented the serialized merge queue and integration checks per Architecture Sections 16.4, 23.2, 23.3, and 30.2:
+
+- **Merge queue service** (`mergequeue/mergequeue.go`) — `Queue` struct with `Enqueue` (adds approved output to queue, emits `merge_queued` event), `Tick` (processes one item per invocation for serialization), and `Len`. The `Tick` method executes all 10 steps from Architecture Section 16.4: validate base_snapshot against HEAD, detect conflicts via git diff, apply Meeseeks output to project (add/modify/delete/rename), run integration checks, commit on success or revert and requeue on failure, re-index changed files, release write-set locks, and mark the task done.
+
+- **Conflict detection** — Uses `git diff --name-only` via the `ChangedFilesSince` git operation to identify files that actually changed between the base_snapshot and current HEAD. Only output files that overlap with genuinely changed files are treated as conflicts, preventing excessive requeuing when unrelated tasks commit to non-overlapping files. Falls back to conservative file-existence checking when git diff is unavailable.
+
+- **File apply/revert** — `applyOutput` copies files from the Meeseeks staging directory to the project, handles deletions and renames, and creates a `fileBackup` with original file contents. `revertOutput` restores all files to their pre-apply state when integration checks or commits fail. Newly added files are removed on revert; modified files are restored to original content.
+
+- **Commit protocol** — `formatCommitMessage` produces architecture-compliant commit messages per Section 23.2: `[axiom] <task-title>` header followed by Task, SRS Refs, Meeseeks Model, Reviewer Model, Attempt, Cost, and Base Snapshot metadata lines.
+
+- **Integration checks** — The `Validator` interface abstracts project-wide build/test/lint checks per Section 23.3. The engine adapter currently uses a stub validator (logs a warning when used) that will be connected to real Docker validation containers when the full execution pipeline is complete.
+
+- **Failure handling** — Per Sections 23.3 and 30.2: on integration check failure, the merge queue reverts applied files, stores structured feedback on the latest attempt record (for inclusion in the next TaskSpec), releases write-set locks, requeues the task, and emits a `merge_failed` event.
+
+- **Engine integration** (`engine/mergequeue.go`) — Six adapter types bridge engine services to merge queue interfaces: `mergeQueueGitAdapter` (wraps `GitService` with `ChangedFilesSince`), `mergeQueueValidatorAdapter` (stub for integration checks), `mergeQueueIndexAdapter` (wraps `IndexService`), `mergeQueueLockAdapter` (wraps `scheduler.ReleaseLocks`), `mergeQueueTaskAdapter` (handles `CompleteTask` and `RequeueTask` with feedback persistence), `mergeQueueEventAdapter` (wraps `events.Bus`). The merge queue runs as a 500ms background worker alongside the scheduler.
+
+- **GitService expansion** — Extended `engine.GitService` interface with `AddFiles(dir, files)`, `Commit(dir, message)`, and `ChangedFilesSince(dir, sinceRef)`. Added `ChangedFilesSince` to `gitops.Manager` using `git diff --name-only`.
+
+- **Events** — Three merge queue events: `merge_queued` (on enqueue), `merge_succeeded` (after commit), `merge_failed` (on any failure). All events were already defined in `events/types.go` from Phase 3.
+
+- **Test coverage** — 20 tests covering: empty queue no-op, queue length tracking, clean merge success, commit message format verification, stale snapshot with no conflicts (proceed), stale snapshot with conflicts (requeue), integration check failure (revert + requeue), file deletions, file renames, serialization (one-at-a-time), event emission (queued/succeeded/failed), commit failure handling, indexer failure non-fatality, all affected files indexed, correct git staging, integration check file revert, new file cleanup on revert, and context cancellation.
+
+- **Known deferred items:**
+  - Real integration check execution via Docker validation containers (validator interface is abstracted; stub adapter passes all checks)
+  - Three-way merge for stale snapshots (currently uses whole-file replacement; textual merge would reduce requeuing further)
+
+See [Approval Pipeline Reference](approval-pipeline.md) for the full Stage 5 documentation.
 
 ### Phase 11 Summary
 

@@ -139,6 +139,7 @@ sha, err := mgr.CommitTask(dir, gitops.CommitInfo{
 | `Diff(dir, from, to) (string, error)` | Diff between two refs (two-dot: `from..to`) |
 | `DiffStaged(dir) (string, error)` | Diff of currently staged changes |
 | `DiffWorkBranch(dir, baseBranch, workBranch) (string, error)` | Three-dot diff showing changes since branch divergence |
+| `ChangedFilesSince(dir, sinceRef) ([]string, error)` | Returns file paths changed between `sinceRef` and HEAD (used by merge queue for conflict detection) |
 
 `DiffWorkBranch` is used for the final branch review before the user merges (Architecture Section 23.4):
 
@@ -176,6 +177,9 @@ type GitService interface {
     CreateBranch(dir, name string) error
     CurrentHEAD(dir string) (string, error)
     IsDirty(dir string) (bool, error)
+    AddFiles(dir string, files []string) error
+    Commit(dir string, message string) (string, error)
+    ChangedFilesSince(dir, sinceRef string) ([]string, error)
 }
 ```
 
@@ -200,7 +204,7 @@ The gitops package has 38 tests covering:
 - Dirty detection for untracked files, staged changes, and modified tracked files
 - Commit message formatting with exact architecture compliance verification
 - File staging and commit with SHA verification
-- Diffs between refs, staged changes, and work branches
+- Diffs between refs, staged changes, work branches, and changed-files-since queries
 - SetupWorkBranch for both new and resume scenarios
 - CancelCleanup for uncommitted changes, committed work preservation, and clean branches
 - Deterministic branch creation (exit criteria)

@@ -85,6 +85,16 @@ func (n *noopGitService) IsDirty(dir string) (bool, error) {
 	return n.dirty, nil
 }
 
+func (n *noopGitService) AddFiles(dir string, files []string) error { return nil }
+
+func (n *noopGitService) Commit(dir string, message string) (string, error) {
+	return "commit-sha", nil
+}
+
+func (n *noopGitService) ChangedFilesSince(dir, sinceRef string) ([]string, error) {
+	return nil, nil
+}
+
 type noopContainerService struct{}
 
 func (n *noopContainerService) Start(ctx context.Context, spec ContainerSpec) (string, error) {

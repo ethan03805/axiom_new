@@ -332,9 +332,59 @@ type GateResult struct {
 
 ## Stage 5: Merge Queue
 
-**Package:** `internal/mergequeue/` (Phase 12 — not yet implemented)
+**Package:** `internal/mergequeue/`
 
-Approved files will be submitted to the serialized merge queue, which validates against current HEAD, runs integration checks, and commits on success. See the [Implementation Plan](../IMPLEMENTATION_PLAN.md) Phase 12 for details.
+The serialized merge queue ensures every commit is validated against the actual current project state. Only one merge is processed at a time, preventing stale-context conflicts.
+
+### Merge Process (Architecture Section 16.4)
+
+```
+1. Receive approved output from approval pipeline (Enqueue)
+2. Validate base_snapshot against current HEAD
+3. If stale: check for actual file conflicts via git diff
+   - No conflicts: proceed with integration checks
+   - Conflicts: requeue task with updated context
+4. Apply Meeseeks output to project (copy files, delete, rename)
+5. Run project-wide integration checks (build, test, lint)
+6. If integration fails: revert applied files, requeue task with failure feedback
+7. If integration passes: stage files and commit with architecture-compliant message
+8. Re-index changed files via semantic indexer
+9. Release write-set locks
+10. Mark task done (dependent tasks unblocked by scheduler)
+```
+
+### Key Types
+
+- **`MergeItem`** — Represents an approved task output ready to merge. Includes task metadata, staging directory, commit info, and file operations (add, delete, rename).
+- **`Queue`** — The serialized merge queue. Thread-safe with mutex-protected item list. Processes one item per `Tick()`.
+- **`CommitInfo`** — Metadata for architecture-compliant commit messages (Section 23.2).
+
+### Interfaces
+
+The merge queue uses dependency injection for all external operations:
+
+| Interface | Purpose |
+|-----------|---------|
+| `GitOps` | HEAD checks, file staging, commits, changed-file detection |
+| `Validator` | Project-wide integration checks (build/test/lint) |
+| `Indexer` | Incremental re-indexing after commits |
+| `LockReleaser` | Write-set lock release after merge or failure |
+| `TaskCompleter` | Task status transitions (done or requeue) |
+| `EventEmitter` | Engine event publication |
+
+### Failure Handling
+
+On any failure (conflict, integration check failure, commit failure), the merge queue:
+1. Reverts any files written to the project directory
+2. Releases write-set locks
+3. Requeues the task with structured failure feedback
+4. Emits a `merge_failed` event
+
+Integration failure feedback is stored on the latest attempt record so the next TaskSpec includes it (Sections 23.3, 30.2).
+
+### Conflict Detection
+
+When the base_snapshot differs from current HEAD, the merge queue uses `git diff --name-only` to determine which files actually changed. Only output files that overlap with genuinely changed files are treated as conflicts. This avoids excessive requeuing when unrelated files have been committed by other tasks.
 
 ---
 

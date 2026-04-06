@@ -360,3 +360,21 @@ queued → in_progress → done
 | `MaxRetriesPerTier` | 3 | Architecture Section 30.1 |
 | `MaxEscalations` | 2 | Architecture Section 30.1 |
 | Scheduler interval | 500ms | Engine worker registration |
+| Merge queue interval | 500ms | Engine worker registration |
+
+## Integration with Merge Queue
+
+After a task's output passes through the approval pipeline (manifest validation, validation sandbox, reviewer, orchestrator gate), the output is submitted to the serialized merge queue via `engine.EnqueueMerge()`. The merge queue runs as a separate 500ms background worker alongside the scheduler.
+
+When the merge queue successfully commits a task's output:
+1. It calls `scheduler.ReleaseLocks()` to release write-set locks and process any waiters
+2. It marks the task as `done` via `state.DB.UpdateTaskStatus()`
+3. The scheduler's next `Tick` automatically unblocks dependent tasks — `findReadyTasks` checks all dependencies have status `done` before dispatching
+
+When the merge queue rejects a task (conflict or integration failure):
+1. It stores failure feedback on the latest attempt record
+2. It releases write-set locks
+3. It transitions the task `in_progress → failed → queued` for a fresh attempt
+4. The scheduler picks it up on the next dispatch cycle
+
+See [Approval Pipeline Reference](approval-pipeline.md) for the full merge queue documentation.
