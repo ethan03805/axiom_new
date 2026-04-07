@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
 
 	"github.com/openaxiom/axiom/internal/bitnet"
 	"github.com/openaxiom/axiom/internal/config"
@@ -86,7 +87,7 @@ func Open(log *slog.Logger) (*App, error) {
 	validationSvc := validation.NewService(validation.ServiceOptions{
 		Containers: containerSvc,
 		Log:        log,
-		Runner:     validation.FallbackRunner{},
+		Runner:     buildValidationRunner(cfg, containerSvc, log),
 	})
 	reviewSvc := review.NewService(review.ServiceOptions{
 		Containers: containerSvc,
@@ -146,6 +147,46 @@ func (a *App) Close() error {
 		return a.DB.Close()
 	}
 	return nil
+}
+
+// buildValidationRunner selects the validation CheckRunner used by the engine.
+//
+// By default (when a validation image is configured and the operator has not
+// opted out), it returns the real DockerCheckRunner so Stage 2 / Stage 5
+// checks actually run language profile commands via docker exec. When no
+// image is configured (e.g. in CI/test environments without Docker) or the
+// AXIOM_VALIDATION_DISABLED escape hatch is set, it falls back to the
+// fail-closed FallbackRunner so unconfigured runtimes never silently pass.
+//
+// Per Architecture Section 23.3, the merge queue must never commit without
+// real build/test/lint checks — this function is where that promise is kept.
+func buildValidationRunner(cfg *config.Config, containerSvc engine.ContainerService, log *slog.Logger) validation.CheckRunner {
+	if os.Getenv("AXIOM_VALIDATION_DISABLED") == "1" {
+		log.Warn("validation runner disabled via AXIOM_VALIDATION_DISABLED; merges will fail closed")
+		return validation.FallbackRunner{}
+	}
+	if cfg == nil || cfg.Docker.Image == "" {
+		log.Warn("no validation image configured; using fail-closed fallback runner")
+		return validation.FallbackRunner{}
+	}
+	return validation.NewDockerCheckRunner(containerSvc, log)
+}
+
+// defaultValidationRunnerType returns the reflect.Type of the CheckRunner
+// that a production Open() would wire given a normal config. It exists so
+// tests can assert the default runner without standing up a real Docker
+// daemon or full composition root.
+func defaultValidationRunnerType() reflect.Type {
+	cfg := &config.Config{Docker: config.DockerConfig{Image: "axiom-meeseeks-multi:latest"}}
+	// Ensure the env override is not set in test environments.
+	prev, hadPrev := os.LookupEnv("AXIOM_VALIDATION_DISABLED")
+	_ = os.Unsetenv("AXIOM_VALIDATION_DISABLED")
+	defer func() {
+		if hadPrev {
+			_ = os.Setenv("AXIOM_VALIDATION_DISABLED", prev)
+		}
+	}()
+	return reflect.TypeOf(buildValidationRunner(cfg, nil, slog.Default()))
 }
 
 // NewLogger creates a structured logger for Axiom.
