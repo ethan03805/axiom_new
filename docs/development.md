@@ -17,7 +17,10 @@ axiom/
 │   │   ├── srs.go          # SRS lifecycle (SubmitSRS, ApproveSRS, RejectSRS) (Phase 9)
 │   │   ├── eco.go          # ECO lifecycle (ProposeECO, ApproveECO, RejectECO) (Phase 9)
 │   │   ├── scheduler.go    # Scheduler worker loop + engine adapters (engineModelSelector, engineSnapshotProvider) (Phase 10)
-│   │   ├── mergequeue.go   # Merge queue worker loop + engine adapters (git, validator, indexer, lock, task, event) (Phase 12)
+│   │   ├── executor.go     # Attempt executor: TaskSpec -> IPC -> validation -> review -> merge enqueue
+│   │   ├── taskspec.go     # TaskSpec construction from task state, repo context, and prior feedback
+│   │   ├── ipcmonitor.go   # IPC polling / routing for task output, inference, scope expansion, actions
+│   │   ├── mergequeue.go   # Merge queue worker loop + engine adapters (git, validator, indexer, lock, task, event, attempt) (Phase 12)
 │   │   ├── status.go       # Status projections (RunStatusProjection, TaskSummary, BudgetSummary)
 │   │   └── worker.go       # Background worker pool (register, start, stop periodic workers)
 │   ├── events/             # Central event bus (Phase 3)
@@ -65,7 +68,8 @@ axiom/
 │   │   ├── openrouter.go   # OpenRouter /api/v1/models fetcher + pricing classification
 │   │   ├── bitnet_models.go # BitNet /v1/models fetcher + Falcon model normalization
 │   │   ├── registry.go     # Registry service: refresh, list, get, broker map extraction
-│   │   └── engine_adapter.go # RegistryAdapter → engine.ModelService bridge
+│   │   ├── engine_adapter.go # RegistryAdapter → engine.ModelService bridge
+│   │   └── selector.go     # Shared model selector for scheduler / reviewer service wiring
 │   │
 │   ├── bitnet/             # Local BitNet server lifecycle (Phase 7)
 │   │   └── service.go      # Service: Status, ListModels, Start, Stop, Enabled, WeightDir
@@ -89,7 +93,8 @@ axiom/
 │   │   └── eco.go          # ValidCategory, ValidateProposal, WriteECOFile, ListECOFiles, formatECOMarkdown
 │   │
 │   ├── task/               # Task service: creation, batch, cycle detection, retry/escalation/blocking (Phase 10)
-│   │   └── service.go      # Service, CreateTask, CreateBatch, HandleTaskFailure, RetryTask, EscalateTask, BlockTask, RequestScopeExpansion
+│   │   ├── service.go      # Service, CreateTask, CreateBatch, HandleTaskFailure, RetryTask, EscalateTask, BlockTask, RequestScopeExpansion
+│   │   └── engine_adapter.go # Service → engine.TaskService bridge
 │   │
 │   ├── scheduler/          # Execution scheduler: dispatch loop, lock acquisition, waiter processing (Phase 10)
 │   │   └── scheduler.go    # Scheduler, Tick, ReleaseLocks, ModelSelector/SnapshotProvider interfaces, sortLockRequests
@@ -98,10 +103,14 @@ axiom/
 │   │   └── manifest.go     # ParseManifest, ValidateManifest, ComputeArtifacts, path/scope/size checks
 │   │
 │   ├── validation/         # Validation sandbox orchestration (Phase 11)
-│   │   └── validation.go   # Service, BuildSandboxSpec, DetectLanguages, GetProfile, CheckResult aggregation
+│   │   ├── validation.go   # Service, BuildSandboxSpec, DetectLanguages, GetProfile, CheckResult aggregation
+│   │   ├── engine_adapter.go # Service → engine.ValidationService bridge
+│   │   └── fallback_runner.go # Fail-closed runner used when no real validation runtime is configured
 │   │
 │   ├── review/             # Review pipeline (Phase 11)
-│   │   └── review.go       # Service, IsRiskyFile, ReviewerTier, SelectReviewerModel, ParseVerdict, OrchestratorGate
+│   │   ├── review.go       # Service, IsRiskyFile, ReviewerTier, SelectReviewerModel, ParseVerdict, OrchestratorGate
+│   │   ├── engine_adapter.go # Service → engine.ReviewService bridge
+│   │   └── fallback_runner.go # Fail-closed reviewer runner for unconfigured runtimes
 │   │
 │   ├── mergequeue/         # Serialized merge queue (Phase 12)
 │   │   └── mergequeue.go   # Queue, MergeItem, Tick, Enqueue, conflict detection, file apply/revert, commit
@@ -400,8 +409,9 @@ Phase 20 has started the stabilization and release hardening pass:
 
 - **Missing package coverage** (`internal/app/app_test.go`, `internal/observability/promptlog_test.go`) - Added tests for composition-root discovery/recovery behavior and prompt-log persistence/redaction semantics.
 
+- **Execution pipeline wiring** (`internal/engine/executor.go`, `internal/engine/taskspec.go`, `internal/engine/ipcmonitor.go`) - Added the missing runtime glue between scheduler dispatch and merge processing: TaskSpec generation, Meeseeks IPC monitoring, manifest / validation / review progression, merge enqueueing, and attempt phase tracking through the live engine.
+
 - **Known remaining gaps**
-  - The engine's merge-queue adapter still uses a stub integration validator. The `internal/mergequeue/` package is well tested in isolation, but end-to-end runtime wiring to a real validation runner remains outstanding.
   - `engine.CreateRun` persists `work_branch` metadata but does not yet call the git package's `SetupWorkBranch`, so branch checkout and dirty-tree enforcement are not active in the live `axiom run` path.
   - Axiom currently relies on a user-appointed external orchestrator for initial SRS generation. No embedded orchestrator is wired into live app flows, and the run prompt / `submit_srs` handoff is still incomplete.
   - The test-generation service is implemented, but automatic `CreateTestTask` / `MarkConverged` hooks are still explicit/orchestrator-driven rather than engine-wired.
@@ -624,11 +634,11 @@ Phase 12 implemented the serialized merge queue and integration checks per Archi
 
 - **Commit protocol** — `formatCommitMessage` produces architecture-compliant commit messages per Section 23.2: `[axiom] <task-title>` header followed by Task, SRS Refs, Meeseeks Model, Reviewer Model, Attempt, Cost, and Base Snapshot metadata lines.
 
-- **Integration checks** — The `Validator` interface abstracts project-wide build/test/lint checks per Section 23.3. The engine adapter currently uses a stub validator (logs a warning when used) that will be connected to real Docker validation containers when the full execution pipeline is complete.
+- **Integration checks** — The `Validator` interface abstracts project-wide build/test/lint checks per Section 23.3. The engine adapter now delegates merge-time integration validation to the configured validation service, so merge processing uses the same validation contract as the earlier approval stages.
 
 - **Failure handling** — Per Sections 23.3 and 30.2: on integration check failure, the merge queue reverts applied files, stores structured feedback on the latest attempt record (for inclusion in the next TaskSpec), releases write-set locks, requeues the task, and emits a `merge_failed` event.
 
-- **Engine integration** (`engine/mergequeue.go`) — Six adapter types bridge engine services to merge queue interfaces: `mergeQueueGitAdapter` (wraps `GitService` with `ChangedFilesSince`), `mergeQueueValidatorAdapter` (stub for integration checks), `mergeQueueIndexAdapter` (wraps `IndexService`), `mergeQueueLockAdapter` (wraps `scheduler.ReleaseLocks`), `mergeQueueTaskAdapter` (handles `CompleteTask` and `RequeueTask` with feedback persistence), `mergeQueueEventAdapter` (wraps `events.Bus`). The merge queue runs as a 500ms background worker alongside the scheduler.
+- **Engine integration** (`engine/mergequeue.go`) — Seven adapter types bridge engine services to merge queue interfaces: `mergeQueueGitAdapter` (wraps `GitService` with `ChangedFilesSince`), `mergeQueueValidatorAdapter` (delegates to the validation service), `mergeQueueIndexAdapter` (wraps `IndexService`), `mergeQueueLockAdapter` (wraps `scheduler.ReleaseLocks`), `mergeQueueTaskAdapter` (handles `CompleteTask` and `RequeueTask` with feedback persistence), `mergeQueueEventAdapter` (wraps `events.Bus`), and `mergeQueueAttemptAdapter` (advances attempt phase/status and cleans task dirs after merge completion or failure). The merge queue runs as a 500ms background worker alongside the scheduler and executor.
 
 - **GitService expansion** — Extended `engine.GitService` interface with `AddFiles(dir, files)`, `Commit(dir, message)`, and `ChangedFilesSince(dir, sinceRef)`. Added `ChangedFilesSince` to `gitops.Manager` using `git diff --name-only`.
 
@@ -637,7 +647,6 @@ Phase 12 implemented the serialized merge queue and integration checks per Archi
 - **Test coverage** — 20 tests covering: empty queue no-op, queue length tracking, clean merge success, commit message format verification, stale snapshot with no conflicts (proceed), stale snapshot with conflicts (requeue), integration check failure (revert + requeue), file deletions, file renames, serialization (one-at-a-time), event emission (queued/succeeded/failed), commit failure handling, indexer failure non-fatality, all affected files indexed, correct git staging, integration check file revert, new file cleanup on revert, and context cancellation.
 
 - **Known deferred items:**
-  - Real integration check execution via Docker validation containers (validator interface is abstracted; stub adapter passes all checks)
   - Three-way merge for stale snapshots (currently uses whole-file replacement; textual merge would reduce requeuing further)
 
 See [Approval Pipeline Reference](approval-pipeline.md) for the full Stage 5 documentation.
@@ -659,7 +668,7 @@ Phase 11 implemented the approval pipeline that protects the repo from bad outpu
 - **Test patterns** — All 74 tests follow existing codebase conventions: pure `testing.T` assertions, `t.TempDir()` for filesystem isolation, simple mock structs for `engine.ContainerService`, `CheckRunner`, `ReviewRunner`, and `ModelSelector` interfaces. No external test dependencies.
 
 - **Known deferred items:**
-  - Actual container execution of validation checks (runner interface is abstracted; real Docker execution wired when task execution pipeline is complete)
+  - Concrete in-container validation and reviewer runners for the default app wiring (the executor path is live, but the current fallback runners fail closed until a real runtime is configured)
   - Warm sandbox pools (Section 13.8 — behind `warm_pool_enabled = false` feature flag)
   - Integration sandbox with scoped secrets/network (Section 13.6 — config struct exists, not implemented)
   - Batched review for local-tier tasks (Section 14.3)
@@ -915,5 +924,3 @@ Phase 2 added the full domain service layer to the `state` package:
 - **69 tests** covering all CRUD operations, valid/invalid transitions, lock conflicts, timestamp handling, and referential integrity
 
 See [Database Schema Reference](database-schema.md) for the complete repository API.
-
-

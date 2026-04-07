@@ -14,7 +14,10 @@ import (
 	"github.com/openaxiom/axiom/internal/index"
 	"github.com/openaxiom/axiom/internal/models"
 	"github.com/openaxiom/axiom/internal/project"
+	"github.com/openaxiom/axiom/internal/review"
 	"github.com/openaxiom/axiom/internal/state"
+	"github.com/openaxiom/axiom/internal/task"
+	"github.com/openaxiom/axiom/internal/validation"
 )
 
 // App is the Axiom application composition root.
@@ -72,6 +75,7 @@ func Open(log *slog.Logger) (*App, error) {
 	bitnetSvc := bitnet.NewService(cfg)
 	gitSvc := gitops.New(log)
 	indexer := index.NewIndexerAdapter(index.NewIndexer(db, log))
+	modelService := models.NewRegistryAdapter(registry)
 	containerSvc := container.New(container.Options{
 		ProjectRoot: root,
 		Config:      &cfg.Docker,
@@ -79,16 +83,31 @@ func Open(log *slog.Logger) (*App, error) {
 		Log:         log,
 		Exec:        container.CLIExecutor{},
 	})
+	validationSvc := validation.NewService(validation.ServiceOptions{
+		Containers: containerSvc,
+		Log:        log,
+		Runner:     validation.FallbackRunner{},
+	})
+	reviewSvc := review.NewService(review.ServiceOptions{
+		Containers: containerSvc,
+		Models:     models.NewSelector(modelService, log),
+		Runner:     review.FallbackRunner{},
+		Log:        log,
+	})
+	taskSvc := task.New(db, log)
 
 	eng, err := engine.New(engine.Options{
-		Config:    cfg,
-		DB:        db,
-		RootDir:   root,
-		Log:       log,
-		Git:       gitSvc,
-		Container: containerSvc,
-		Index:     indexer,
-		Models:    models.NewRegistryAdapter(registry),
+		Config:     cfg,
+		DB:         db,
+		RootDir:    root,
+		Log:        log,
+		Git:        gitSvc,
+		Container:  containerSvc,
+		Index:      indexer,
+		Models:     modelService,
+		Validation: validation.NewEngineAdapter(validationSvc),
+		Review:     review.NewEngineAdapter(reviewSvc),
+		Tasks:      task.NewEngineAdapter(taskSvc),
 	})
 	if err != nil {
 		db.Close()

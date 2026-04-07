@@ -201,10 +201,11 @@ See [SRS and ECO Reference](srs-eco.md) for the full API and lifecycle details.
 
 ## Task System and Scheduling
 
-After the SRS is approved and the run becomes active, the orchestrator decomposes the SRS into a task tree. The engine's task system and scheduler handle:
+After the SRS is approved and the run becomes active, the orchestrator decomposes the SRS into a task tree. The engine's task system, scheduler, and executor handle:
 
 - **Task creation** with dependency validation and cycle detection
 - **Concurrent execution** with write-set locking (file, package, module, or schema scope)
+- **Attempt execution** from TaskSpec creation through container IPC, validation, review, and merge enqueueing
 - **Automatic retry** (up to 3 times per tier) and **escalation** (up to 2 tier bumps: local → cheap → standard → premium)
 - **Lock conflict resolution** — tasks that need locked resources wait and are automatically requeued when locks are released
 
@@ -235,8 +236,6 @@ After a task's output passes through the approval pipeline (manifest validation,
 6. On failure: reverts all applied files, requeues the task with structured failure feedback
 
 Only one merge is processed at a time, preventing concurrent commit conflicts.
-
-Current implementation note: `internal/mergequeue` and `internal/validation` cover this flow at the package level, but the engine adapter in `internal/engine/mergequeue.go` still uses a stub validator. End-to-end runtime merge processing therefore does not yet execute real build/test/lint checks.
 
 See [Approval Pipeline Reference](approval-pipeline.md) for implementation details.
 
@@ -416,4 +415,3 @@ Available now:
 - [Release Packaging Reference](release-packaging.md) - candidate bundle layout, fixture repos, manifest structure, and test-matrix packaging
 
 See the [Architecture Document](../ARCHITECTURE.md) and [Implementation Plan](../IMPLEMENTATION_PLAN.md) for the full roadmap.
-

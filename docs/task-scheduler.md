@@ -13,6 +13,12 @@ The task system moves Axiom from an approved SRS to safe concurrent execution. I
 
 The scheduler is registered as an engine background worker and runs every 500ms.
 
+Execution boundary:
+
+- The **scheduler** owns readiness, lock acquisition, and attempt creation.
+- The **executor** (`internal/engine/executor.go`) owns TaskSpec construction, container lifecycle, IPC monitoring, approval-pipeline progression, and merge enqueueing.
+- The **merge queue** owns serialized commit application, integration validation, lock release, and final task completion.
+
 ## Task Service
 
 ### Package: `internal/task/`
@@ -251,6 +257,13 @@ The scheduler is wired into the engine in `internal/engine/scheduler.go`:
 ```go
 // Engine.Start() registers the scheduler as a background worker:
 e.workers.Register("scheduler", e.schedulerLoop, 500*time.Millisecond)
+```
+
+The executor is registered alongside it:
+
+```go
+e.workers.Register("executor", e.executorLoop, 500*time.Millisecond)
+e.workers.Register("merge-queue", e.mergeQueueLoop, 500*time.Millisecond)
 ```
 
 Three adapter types bridge engine services to scheduler interfaces:

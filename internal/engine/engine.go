@@ -17,15 +17,18 @@ import (
 
 // Options configures a new Engine instance.
 type Options struct {
-	Config    *config.Config
-	DB        *state.DB
-	RootDir   string
-	Log       *slog.Logger
-	Git       GitService
-	Container ContainerService
-	Inference InferenceService
-	Index     IndexService
-	Models    ModelService
+	Config     *config.Config
+	DB         *state.DB
+	RootDir    string
+	Log        *slog.Logger
+	Git        GitService
+	Container  ContainerService
+	Inference  InferenceService
+	Index      IndexService
+	Models     ModelService
+	Validation ValidationService
+	Review     ReviewService
+	Tasks      TaskService
 }
 
 // Engine is the long-lived trusted control plane runtime.
@@ -38,16 +41,20 @@ type Engine struct {
 	rootDir string
 	log     *slog.Logger
 
-	git       GitService
-	container ContainerService
-	inference InferenceService
-	index     IndexService
-	models    ModelService
+	git        GitService
+	container  ContainerService
+	inference  InferenceService
+	index      IndexService
+	models     ModelService
+	validation ValidationService
+	review     ReviewService
+	tasks      TaskService
 
-	sched      *scheduler.Scheduler
-	mergeQueue *mergequeue.Queue
-	testGen    *testgen.Service
-	workers    *WorkerPool
+	sched          *scheduler.Scheduler
+	mergeQueue     *mergequeue.Queue
+	testGen        *testgen.Service
+	workers        *WorkerPool
+	activeAttempts sync.Map
 
 	mu      sync.Mutex
 	running bool
@@ -73,16 +80,19 @@ func New(opts Options) (*Engine, error) {
 	bus := events.New(opts.DB, opts.Log)
 
 	e := &Engine{
-		cfg:       opts.Config,
-		db:        opts.DB,
-		bus:       bus,
-		rootDir:   opts.RootDir,
-		log:       opts.Log,
-		git:       opts.Git,
-		container: opts.Container,
-		inference: opts.Inference,
-		index:     opts.Index,
-		models:    opts.Models,
+		cfg:        opts.Config,
+		db:         opts.DB,
+		bus:        bus,
+		rootDir:    opts.RootDir,
+		log:        opts.Log,
+		git:        opts.Git,
+		container:  opts.Container,
+		inference:  opts.Inference,
+		index:      opts.Index,
+		models:     opts.Models,
+		validation: opts.Validation,
+		review:     opts.Review,
+		tasks:      opts.Tasks,
 	}
 
 	// Create testgen service for test-generation separation (Section 11.5)
@@ -103,11 +113,12 @@ func New(opts Options) (*Engine, error) {
 		ProjectDir: opts.RootDir,
 		Log:        opts.Log,
 		Git:        &mergeQueueGitAdapter{git: opts.Git, rootDir: opts.RootDir},
-		Validator:  &mergeQueueValidatorAdapter{log: opts.Log},
+		Validator:  &mergeQueueValidatorAdapter{validation: opts.Validation, cfg: opts.Config, log: opts.Log},
 		Indexer:    &mergeQueueIndexAdapter{index: opts.Index},
 		Locks:      &mergeQueueLockAdapter{sched: e.sched},
 		Tasks:      &mergeQueueTaskAdapter{db: opts.DB, sched: e.sched, log: opts.Log},
 		Events:     &mergeQueueEventAdapter{bus: bus},
+		Attempts:   &mergeQueueAttemptAdapter{db: opts.DB, rootDir: opts.RootDir, log: opts.Log},
 	})
 
 	return e, nil
@@ -126,6 +137,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.workers = NewWorkerPool(e.ctx, e.log)
 
 	e.workers.Register("scheduler", e.schedulerLoop, 500*time.Millisecond)
+	e.workers.Register("executor", e.executorLoop, 500*time.Millisecond)
 	e.workers.Register("merge-queue", e.mergeQueueLoop, 500*time.Millisecond)
 	// Future phases will register additional workers:
 	// e.workers.Register("cleanup", e.cleanupLoop, 30*time.Second)

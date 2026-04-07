@@ -327,6 +327,14 @@ eng, err := engine.New(engine.Options{
 })
 ```
 
+At runtime, the engine's attempt executor uses these primitives in a fixed sequence:
+
+1. `ipc.CreateTaskDirs(...)` creates per-task spec, staging, and IPC directories.
+2. `ipc.WriteTaskSpec(...)` writes the Meeseeks-facing `spec.md`.
+3. `dirs.VolumeMounts()` is passed into the container spec so the Meeseeks sees `/workspace/spec`, `/workspace/staging`, and `/workspace/ipc`.
+4. The executor polls `/workspace/ipc/output` for `task_output`, `inference_request`, `request_scope_expansion`, and `action_request` messages.
+5. Successful attempts feed the staged output into the approval pipeline and then the merge queue; failed attempts clean the task directories before retry / escalation.
+
 ## Test Coverage
 
 | Package | Tests | Coverage |

@@ -2,10 +2,7 @@
 
 The approval pipeline is the mechanism by which Meeseeks output moves from container staging to the project filesystem. The package-level implementation models the full five-stage architecture pipeline, and all pipeline operations are intended to be executed by the Trusted Engine.
 
-Current runtime note: the supporting packages for manifest validation, sandbox validation, review, merge processing, and test-generation follow-on work exist and are tested, but the live engine still has two notable wiring gaps:
-
-- the merge-queue adapter currently uses a stub validator instead of real build/test/lint execution
-- automatic post-merge test-task creation is not yet invoked by the engine
+Current runtime note: the live engine now wires the scheduler, execution worker, and merge queue together. Ready tasks are dispatched by the scheduler, executed by the engine's attempt executor, passed through manifest validation / sandbox checks / review, and then committed through the serialized merge queue.
 
 Per Architecture Section 14.2, the pipeline has five stages:
 
@@ -182,6 +179,8 @@ Per Architecture Section 13.5, each language ecosystem has specific dependency h
 
 The `CheckRunner` interface abstracts the actual execution of checks inside the container, allowing tests to inject mock runners.
 
+Current wiring note: the executor and merge queue now call into the validation service at runtime. The default app composition currently uses a fail-closed fallback runner until a concrete in-container check runner is configured.
+
 ### Configuration
 
 From `.axiom/config.toml`:
@@ -301,6 +300,8 @@ Per Architecture Section 11.3:
 
 Returns a `ReviewResult` with verdict, feedback, reviewer model/family, and effective tier.
 
+Current wiring note: the executor now invokes the review service in the live runtime. The default app composition currently uses a fail-closed fallback reviewer runner until a concrete reviewer runtime is configured.
+
 ### Prompt-Safe Review Payloads
 
 The review pipeline now relies on the shared phase-18 prompt-safety layer:
@@ -352,9 +353,7 @@ type GateResult struct {
 
 **Package:** `internal/mergequeue/`
 
-The serialized merge queue ensures every commit is validated against the actual current project state. Only one merge is processed at a time, preventing stale-context conflicts.
-
-Current engine note: the `internal/mergequeue` package supports validator injection and handles integration failures correctly when given a real validator. The engine adapter in `internal/engine/mergequeue.go` currently returns success from a stub validator, so runtime merges do not yet execute real integration checks.
+The serialized merge queue ensures every commit is validated against the actual current project state. Only one merge is processed at a time, preventing stale-context conflicts. The engine adapter now delegates merge-time integration checks to the configured validation service and advances attempt phases through `merging` and `succeeded` / `failed`.
 
 ### Merge Process (Architecture Section 16.4)
 

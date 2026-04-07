@@ -150,7 +150,10 @@ func TestStartWhenDisabled(t *testing.T) {
 
 func TestStopWhenNotRunning(t *testing.T) {
 	cfg := testConfig()
-	svc := NewService(cfg)
+	svc := NewService(cfg, WithHomeDir(func() (string, error) {
+		return t.TempDir(), nil
+	}))
+	svc.baseURL = "http://127.0.0.1:1"
 
 	err := svc.Stop(context.Background())
 	if err == nil {

@@ -1,6 +1,11 @@
 package engine
 
-import "context"
+import (
+	"context"
+
+	"github.com/openaxiom/axiom/internal/config"
+	"github.com/openaxiom/axiom/internal/state"
+)
 
 // GitService abstracts git operations for testability.
 // The engine uses this interface instead of calling git directly.
@@ -76,6 +81,87 @@ type InferenceResponse struct {
 type InferenceService interface {
 	Available() bool
 	Infer(ctx context.Context, req InferenceRequest) (*InferenceResponse, error)
+}
+
+// ValidationRename describes a rename that must be applied before checks run.
+type ValidationRename struct {
+	From string
+	To   string
+}
+
+// ValidationCheckRequest describes the staged output to validate.
+type ValidationCheckRequest struct {
+	TaskID      string
+	RunID       string
+	Image       string
+	StagingDir  string
+	ProjectDir  string
+	Config      *config.ValidationConfig
+	Languages   []string
+	DeleteFiles []string
+	RenameFiles []ValidationRename
+}
+
+// ValidationCheckResult captures one automated check outcome.
+type ValidationCheckResult struct {
+	CheckType  state.ValidationCheckType
+	Status     state.ValidationStatus
+	Output     string
+	DurationMs int64
+}
+
+// ValidationService runs automated checks for staged task output.
+type ValidationService interface {
+	RunChecks(ctx context.Context, req ValidationCheckRequest) ([]ValidationCheckResult, error)
+}
+
+// ReviewRunRequest describes a reviewer evaluation request.
+type ReviewRunRequest struct {
+	TaskID         string
+	RunID          string
+	Image          string
+	SpecDir        string
+	TaskTier       state.TaskTier
+	MeeseeksFamily string
+	CPULimit       float64
+	MemLimit       string
+	AffectedFiles  []string
+}
+
+// ReviewRunResult holds the parsed reviewer verdict and metadata.
+type ReviewRunResult struct {
+	Verdict        state.ReviewVerdict
+	Feedback       string
+	ReviewerModel  string
+	ReviewerFamily string
+	ReviewerTier   state.TaskTier
+}
+
+// ReviewService orchestrates the reviewer stage.
+type ReviewService interface {
+	RunReview(ctx context.Context, req ReviewRunRequest) (*ReviewRunResult, error)
+}
+
+// TaskFailureAction records how the task service routed a failed task.
+type TaskFailureAction string
+
+const (
+	TaskFailureRetry    TaskFailureAction = "retry"
+	TaskFailureEscalate TaskFailureAction = "escalate"
+	TaskFailureBlock    TaskFailureAction = "block"
+)
+
+// TargetFileSpec describes an engine-level target file and lock scope.
+type TargetFileSpec struct {
+	FilePath        string
+	LockScope       string
+	LockResourceKey string
+}
+
+// TaskService handles retry/escalation decisions and scope expansion.
+type TaskService interface {
+	HandleTaskFailure(ctx context.Context, taskID string, feedback string) (TaskFailureAction, error)
+	RequestScopeExpansion(ctx context.Context, taskID string, additionalFiles []TargetFileSpec) error
 }
 
 // IndexService abstracts semantic indexing for testability.

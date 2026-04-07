@@ -53,6 +53,13 @@ type TaskCompleter interface {
 	RequeueTask(ctx context.Context, taskID string, feedback string) error
 }
 
+// AttemptTracker updates attempt lifecycle as merge items are processed.
+type AttemptTracker interface {
+	MarkMerging(ctx context.Context, attemptID int64) error
+	MarkSucceeded(ctx context.Context, attemptID int64) error
+	MarkFailed(ctx context.Context, attemptID int64, feedback string) error
+}
+
 // EventEmitter publishes engine events for the merge queue.
 type EventEmitter interface {
 	Emit(eventType string, taskID string, details map[string]any)
@@ -114,6 +121,7 @@ type Options struct {
 	Locks      LockReleaser
 	Tasks      TaskCompleter
 	Events     EventEmitter
+	Attempts   AttemptTracker
 }
 
 // Queue is the serialized merge queue per Architecture Section 16.4.
@@ -127,6 +135,7 @@ type Queue struct {
 	locks      LockReleaser
 	tasks      TaskCompleter
 	events     EventEmitter
+	attempts   AttemptTracker
 
 	mu    sync.Mutex
 	items []MergeItem
@@ -147,6 +156,7 @@ func New(opts Options) *Queue {
 		locks:      opts.Locks,
 		tasks:      opts.Tasks,
 		events:     opts.Events,
+		attempts:   opts.Attempts,
 	}
 }
 
@@ -211,6 +221,11 @@ func (q *Queue) processItem(ctx context.Context, item MergeItem) error {
 		"task_id", item.TaskID,
 		"base_snapshot", item.BaseSnapshot,
 	)
+	if q.attempts != nil {
+		if err := q.attempts.MarkMerging(ctx, item.AttemptID); err != nil {
+			q.log.Warn("failed to mark attempt merging", "task_id", item.TaskID, "attempt_id", item.AttemptID, "error", err)
+		}
+	}
 
 	// Step 2: Validate base_snapshot against current HEAD
 	head, err := q.git.CurrentHEAD(q.projectDir)
@@ -309,6 +324,11 @@ func (q *Queue) processItem(ctx context.Context, item MergeItem) error {
 			"error", err,
 		)
 	}
+	if q.attempts != nil {
+		if err := q.attempts.MarkSucceeded(ctx, item.AttemptID); err != nil {
+			q.log.Warn("failed to mark attempt succeeded", "task_id", item.TaskID, "attempt_id", item.AttemptID, "error", err)
+		}
+	}
 
 	q.events.Emit("merge_succeeded", item.TaskID, map[string]any{
 		"commit_sha": commitSHA,
@@ -324,6 +344,11 @@ func (q *Queue) failItem(ctx context.Context, item MergeItem, feedback string) e
 		"run_id":   item.RunID,
 		"feedback": feedback,
 	})
+	if q.attempts != nil {
+		if err := q.attempts.MarkFailed(ctx, item.AttemptID, feedback); err != nil {
+			q.log.Warn("failed to mark attempt failed", "task_id", item.TaskID, "attempt_id", item.AttemptID, "error", err)
+		}
+	}
 
 	// Release locks even on failure
 	if err := q.locks.ReleaseLocks(ctx, item.TaskID); err != nil {

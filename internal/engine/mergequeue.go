@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/events"
+	"github.com/openaxiom/axiom/internal/ipc"
 	"github.com/openaxiom/axiom/internal/mergequeue"
 	"github.com/openaxiom/axiom/internal/scheduler"
 	"github.com/openaxiom/axiom/internal/state"
@@ -80,16 +82,37 @@ func (a *mergeQueueGitAdapter) ChangedFilesSince(dir, sinceRef string) ([]string
 // mergeQueueValidatorAdapter runs project-wide integration checks.
 // Per Architecture Section 23.3.
 type mergeQueueValidatorAdapter struct {
-	log *slog.Logger
+	validation ValidationService
+	cfg        *config.Config
+	log        *slog.Logger
 }
 
-func (a *mergeQueueValidatorAdapter) RunIntegrationChecks(_ context.Context, _ string) (bool, string, error) {
-	// Integration check execution will be fully wired when the validation
-	// service is connected to real Docker containers in a future phase.
-	if a.log != nil {
-		a.log.Warn("merge queue integration checks using stub validator — no real checks running")
+func (a *mergeQueueValidatorAdapter) RunIntegrationChecks(ctx context.Context, projectDir string) (bool, string, error) {
+	if a.validation == nil {
+		if a.log != nil {
+			a.log.Warn("merge queue validation unavailable; falling back to pass-through")
+		}
+		return true, "", nil
 	}
-	return true, "", nil
+	var image string
+	var validationCfg *config.ValidationConfig
+	if a.cfg != nil {
+		image = a.cfg.Docker.Image
+		validationCfg = &a.cfg.Validation
+	}
+	results, err := a.validation.RunChecks(ctx, ValidationCheckRequest{
+		TaskID:     "merge-queue",
+		RunID:      "",
+		Image:      image,
+		StagingDir: "",
+		ProjectDir: projectDir,
+		Config:     validationCfg,
+		Languages:  detectValidationLanguages(projectDir),
+	})
+	if err != nil {
+		return false, "", err
+	}
+	return validationAllPassed(results), formatValidationResults(results), nil
 }
 
 // mergeQueueIndexAdapter adapts the engine's IndexService to the merge queue's Indexer interface.
@@ -174,4 +197,50 @@ func (a *mergeQueueEventAdapter) Emit(eventType string, taskID string, details m
 		TaskID:  taskID,
 		Details: details,
 	})
+}
+
+// mergeQueueAttemptAdapter persists attempt phase/status updates during merge processing.
+type mergeQueueAttemptAdapter struct {
+	db      *state.DB
+	rootDir string
+	log     *slog.Logger
+}
+
+func (a *mergeQueueAttemptAdapter) MarkMerging(_ context.Context, attemptID int64) error {
+	return a.db.UpdateAttemptPhase(attemptID, state.PhaseMerging)
+}
+
+func (a *mergeQueueAttemptAdapter) MarkSucceeded(_ context.Context, attemptID int64) error {
+	if err := a.db.UpdateAttemptPhase(attemptID, state.PhaseSucceeded); err != nil {
+		return err
+	}
+	if err := a.db.UpdateAttemptStatus(attemptID, state.AttemptPassed); err != nil {
+		return err
+	}
+	return a.cleanupAttemptDirs(attemptID)
+}
+
+func (a *mergeQueueAttemptAdapter) MarkFailed(_ context.Context, attemptID int64, feedback string) error {
+	attempt, err := a.db.GetAttempt(attemptID)
+	if err != nil {
+		return err
+	}
+	if err := a.db.UpdateAttemptPhase(attemptID, state.PhaseFailed); err != nil {
+		return err
+	}
+	if err := a.db.UpdateAttemptStatus(attemptID, state.AttemptFailed); err != nil {
+		return err
+	}
+	if _, err := a.db.Exec(`UPDATE task_attempts SET failure_reason = ?, feedback = ? WHERE id = ?`, feedback, feedback, attemptID); err != nil {
+		return err
+	}
+	return ipc.CleanupTaskDirs(a.rootDir, attempt.TaskID)
+}
+
+func (a *mergeQueueAttemptAdapter) cleanupAttemptDirs(attemptID int64) error {
+	attempt, err := a.db.GetAttempt(attemptID)
+	if err != nil {
+		return err
+	}
+	return ipc.CleanupTaskDirs(a.rootDir, attempt.TaskID)
 }

@@ -77,4 +77,4 @@ Fixture repositories live in `testdata/fixtures/` and are used by phase-20 integ
 
 ## Current Limitation
 
-The bundle builder packages docs, fixture repos, and Docker asset definitions, but it does not itself build or publish Docker images. The runtime merge queue also still uses a stub validator adapter rather than a fully wired validation runner, so the first release candidate should treat release bundles as packaging validation rather than a final sign-off mechanism.
+The bundle builder packages docs, fixture repos, and Docker asset definitions, but it does not itself build or publish Docker images. Release bundles should still be treated as packaging validation rather than a final product sign-off mechanism, because image publication, external runtime provisioning, and release-process verification remain separate concerns.
