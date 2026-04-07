@@ -1,0 +1,10 @@
+{
+  "task_id": "task-success",
+  "base_snapshot": "base-sha",
+  "files": {
+    "added": [{"path":"hello.txt","binary":false}],
+    "modified": [],
+    "deleted": [],
+    "renamed": []
+  }
+}
