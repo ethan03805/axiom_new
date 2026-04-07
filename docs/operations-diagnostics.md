@@ -148,6 +148,17 @@ Notes:
 - startup-only recovery/diagnostic events without a `run_id` are fanned out to subscribers but are not written to the `events` table.
 - `resource_warning` is defined in the event catalog, but the current `axiom doctor` command reports CPU pressure through `WARN` output lines rather than publishing events.
 
+## Validation Runner Failures
+
+Per Architecture Section 23.3 the merge queue refuses to commit unless `validation.DockerCheckRunner` (`internal/validation/runner_docker.go`) returns no failing results. Common failure modes and fixes:
+
+| Symptom (in attempt feedback / engine log) | Cause | Fix |
+|---|---|---|
+| `infrastructure error running compile: docker exec ...` | `engine.ContainerService.Exec` returned an error — typically the Docker daemon is unreachable or the sandbox container crashed before the command ran. | Run `docker ps` to confirm the daemon is up, check `docker logs axiom-validator-<task-id>`, and retry. |
+| `dependency_cache_miss: ...` in a compile/test result | The sandbox's prepared dependency cache did not cover the current lockfile hash — per Architecture Section 13.5 the validator fails closed rather than reaching out to the network. | Re-run `axiom preflight` (or the equivalent cache-refresh step) to rebuild the cache for the current lockfile, then requeue the task. |
+| Every task stuck in `failed` with feedback `validation runner is not configured` | The process is running with `AXIOM_VALIDATION_DISABLED=1`, or no `docker.image` is set in `.axiom/config.toml` — so `app.Open()` fell back to the fail-closed `FallbackRunner`. | Remove the env var (`unset AXIOM_VALIDATION_DISABLED`) and ensure `[docker].image` is set in config. Restart the engine and the real `DockerCheckRunner` will be used. |
+| `go: expected 'package'` (or equivalent) in compile feedback, but the code looks fine | The runner's `cd /workspace/project && <cmd>` wrapper is running from the mounted project root. A real compile error exists — the staged output from the Meeseeks is broken. | Inspect the feedback, fix the task's spec or let the retry/escalation flow pick a different model. |
+
 ## Related References
 
 - [Getting Started](getting-started.md)

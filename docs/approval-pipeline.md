@@ -179,7 +179,9 @@ Per Architecture Section 13.5, each language ecosystem has specific dependency h
 
 The `CheckRunner` interface abstracts the actual execution of checks inside the container, allowing tests to inject mock runners.
 
-Current wiring note: the executor and merge queue now call into the validation service at runtime. The default app composition currently uses a fail-closed fallback runner until a concrete in-container check runner is configured.
+Current wiring: the executor and merge queue both call into the validation service at runtime. The default app composition wires `validation.DockerCheckRunner` (`internal/validation/runner_docker.go`), which runs the language-specific profile commands (`go build ./...`, `golangci-lint run ./...`, `go test ./...`, and the Node/Python/Rust equivalents from `GetProfile`) inside the sandbox container via `engine.ContainerService.Exec` (`docker exec`). Each command is wrapped as `sh -c "cd /workspace/project && <cmd>"` so both stage 2 (with a staging overlay) and stage 5 (only `/workspace/project` mounted) evaluate against the mounted project root.
+
+A fail-closed `FallbackRunner` is still used as an explicit opt-out when Docker is unavailable (no `docker.image` configured in `.axiom/config.toml`) or when the operator sets `AXIOM_VALIDATION_DISABLED=1`. In both cases the runner emits a failing `compile` check so the merge queue cannot silently commit.
 
 ### Configuration
 
@@ -353,7 +355,7 @@ type GateResult struct {
 
 **Package:** `internal/mergequeue/`
 
-The serialized merge queue ensures every commit is validated against the actual current project state. Only one merge is processed at a time, preventing stale-context conflicts. The engine adapter now delegates merge-time integration checks to the configured validation service and advances attempt phases through `merging` and `succeeded` / `failed`.
+The serialized merge queue ensures every commit is validated against the actual current project state. Only one merge is processed at a time, preventing stale-context conflicts. The engine adapter delegates merge-time integration checks to the configured validation service (`validation.DockerCheckRunner` by default) and advances attempt phases through `merging` and `succeeded` / `failed`. Per Architecture Section 23.3, a merge is only committed when `DockerCheckRunner` returns no failing results for every language profile command run inside the sandbox — a broken `go build`, `go test`, or `golangci-lint run` prevents the commit and requeues the task with structured feedback.
 
 ### Merge Process (Architecture Section 16.4)
 

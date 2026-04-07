@@ -4,7 +4,7 @@
 
 - **Go 1.25+** (module requires Go 1.25)
 - **Git** (any recent version)
-- **Docker** (required for container isolation — Meeseeks, reviewers, and validation sandboxes run in Docker)
+- **Docker** (required for container isolation — Meeseeks, reviewers, and validation sandboxes run in Docker). The merge queue will refuse to commit until the validation sandbox can run `docker exec` successfully: `validation.DockerCheckRunner` runs the language-specific build/test/lint commands inside the sandbox for every merge, and failures (or infra errors) block the commit and requeue the task. This is how Axiom guarantees every commit has passed a real build, test, and lint.
 
 ## Installation
 
