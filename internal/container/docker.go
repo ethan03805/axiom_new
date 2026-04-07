@@ -23,6 +23,10 @@ var nameSeq atomic.Int64
 // CommandExecutor abstracts Docker CLI execution for testability.
 type CommandExecutor interface {
 	Run(ctx context.Context, args ...string) (string, error)
+	// RunWithExit runs docker with the given args and returns stdout, stderr,
+	// and the raw exit code separately. A non-zero exit code is a normal
+	// result — only infrastructure failures return a non-nil error.
+	RunWithExit(ctx context.Context, args ...string) (stdout, stderr string, exitCode int, err error)
 }
 
 // Options configures a new DockerService.
@@ -186,11 +190,28 @@ func (d *DockerService) ListRunning(ctx context.Context) ([]string, error) {
 	return result, nil
 }
 
-// Exec runs a command inside a running container via `docker exec`.
-// The real implementation (with exit code capture) lands in Task 2 of
-// Issue 04. This stub is kept minimal so the interface compiles everywhere.
+// Exec runs a command inside a running container via `docker exec` and
+// returns the exit code plus captured stdout/stderr. Per Architecture
+// Section 13.5, the validation runner uses this to execute language profile
+// commands (go build, npm test, …) against the sandbox. A non-zero exit
+// code is a normal result; err is non-nil only on infrastructure failures.
 func (d *DockerService) Exec(ctx context.Context, containerID string, cmd []string) (engine.ExecResult, error) {
-	return engine.ExecResult{}, nil
+	if len(cmd) == 0 {
+		return engine.ExecResult{}, fmt.Errorf("docker exec %s: empty command", containerID)
+	}
+	args := append([]string{"exec", containerID}, cmd...)
+	start := time.Now()
+	stdout, stderr, code, err := d.exec.RunWithExit(ctx, args...)
+	duration := time.Since(start)
+	if err != nil {
+		return engine.ExecResult{}, fmt.Errorf("docker exec %s: %w", containerID, err)
+	}
+	return engine.ExecResult{
+		ExitCode: code,
+		Stdout:   stdout,
+		Stderr:   stderr,
+		Duration: duration,
+	}, nil
 }
 
 // Cleanup removes orphaned axiom-* containers from prior crashed sessions.

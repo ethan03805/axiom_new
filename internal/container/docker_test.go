@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,12 +13,23 @@ import (
 	"github.com/openaxiom/axiom/internal/state"
 )
 
+// execResponse holds a scripted response from the mock executor's RunWithExit.
+type execResponse struct {
+	stdout   string
+	stderr   string
+	exitCode int
+	err      error
+}
+
 // mockExecutor records docker commands instead of running them.
 type mockExecutor struct {
-	commands [][]string
-	outputs  []string
-	errors   []error
-	callIdx  int
+	commands     [][]string
+	outputs      []string
+	errors       []error
+	callIdx      int
+	execCalls    [][]string
+	execResps    []execResponse
+	execCallIdx  int
 }
 
 func (m *mockExecutor) Run(_ context.Context, args ...string) (string, error) {
@@ -31,6 +43,17 @@ func (m *mockExecutor) Run(_ context.Context, args ...string) (string, error) {
 		return m.outputs[idx], nil
 	}
 	return "", nil
+}
+
+func (m *mockExecutor) RunWithExit(_ context.Context, args ...string) (string, string, int, error) {
+	m.execCalls = append(m.execCalls, args)
+	idx := m.execCallIdx
+	m.execCallIdx++
+	if idx >= len(m.execResps) {
+		return "", "", 0, nil
+	}
+	r := m.execResps[idx]
+	return r.stdout, r.stderr, r.exitCode, r.err
 }
 
 func newMockExecutor() *mockExecutor {
@@ -476,6 +499,83 @@ func TestCleanupNoOrphans(t *testing.T) {
 	// Should only have the list command
 	if len(exec.commands) != 1 {
 		t.Errorf("expected 1 command (list only), got %d", len(exec.commands))
+	}
+}
+
+// --- Exec ---
+
+func TestDockerService_Exec_CapturesStdoutAndExitCode(t *testing.T) {
+	exec := newMockExecutor()
+	exec.execResps = append(exec.execResps, execResponse{
+		stdout:   "hello\n",
+		exitCode: 0,
+	})
+	svc, _ := testService(t, exec)
+
+	result, err := svc.Exec(context.Background(), "axiom-test-123", []string{"go", "version"})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", result.ExitCode)
+	}
+	if !strings.Contains(result.Stdout, "hello") {
+		t.Fatalf("Stdout = %q, want to contain hello", result.Stdout)
+	}
+
+	if len(exec.execCalls) != 1 {
+		t.Fatalf("docker invocations = %d, want 1", len(exec.execCalls))
+	}
+	got := exec.execCalls[0]
+	if got[0] != "exec" || got[1] != "axiom-test-123" {
+		t.Fatalf("docker args = %v, want [exec axiom-test-123 go version]", got)
+	}
+	if got[2] != "go" || got[3] != "version" {
+		t.Fatalf("docker args tail = %v, want [go version]", got[2:])
+	}
+}
+
+func TestDockerService_Exec_NonZeroExitIsResultNotError(t *testing.T) {
+	exec := newMockExecutor()
+	exec.execResps = append(exec.execResps, execResponse{
+		stdout:   "FAIL compile\n",
+		stderr:   "compile error line 42",
+		exitCode: 2,
+	})
+	svc, _ := testService(t, exec)
+
+	result, err := svc.Exec(context.Background(), "axiom-test-123", []string{"go", "build", "./..."})
+	if err != nil {
+		t.Fatalf("Exec returned error for non-zero exit; want result: %v", err)
+	}
+	if result.ExitCode != 2 {
+		t.Fatalf("ExitCode = %d, want 2", result.ExitCode)
+	}
+	if !strings.Contains(result.Stderr, "compile error") {
+		t.Fatalf("Stderr = %q, want compile error", result.Stderr)
+	}
+}
+
+func TestDockerService_Exec_InfraErrorPropagates(t *testing.T) {
+	exec := newMockExecutor()
+	exec.execResps = append(exec.execResps, execResponse{
+		err: fmt.Errorf("docker daemon down"),
+	})
+	svc, _ := testService(t, exec)
+
+	_, err := svc.Exec(context.Background(), "axiom-test-123", []string{"true"})
+	if err == nil {
+		t.Fatal("expected infra error, got nil")
+	}
+}
+
+func TestDockerService_Exec_EmptyCmdIsError(t *testing.T) {
+	exec := newMockExecutor()
+	svc, _ := testService(t, exec)
+
+	_, err := svc.Exec(context.Background(), "axiom-test-123", nil)
+	if err == nil {
+		t.Fatal("expected error for empty cmd, got nil")
 	}
 }
 
