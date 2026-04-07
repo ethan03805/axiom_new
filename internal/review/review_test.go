@@ -322,6 +322,10 @@ func (m *mockContainerService) Cleanup(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockContainerService) Exec(ctx context.Context, id string, cmd []string) (engine.ExecResult, error) {
+	return engine.ExecResult{}, nil
+}
+
 type mockModelSelector struct {
 	models []engine.ModelInfo
 }

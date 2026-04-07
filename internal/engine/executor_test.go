@@ -82,6 +82,10 @@ func (s *scriptedContainerService) Cleanup(_ context.Context) error {
 	return nil
 }
 
+func (s *scriptedContainerService) Exec(_ context.Context, _ string, _ []string) (ExecResult, error) {
+	return ExecResult{}, nil
+}
+
 type mockValidationService struct {
 	results []ValidationCheckResult
 	calls   int

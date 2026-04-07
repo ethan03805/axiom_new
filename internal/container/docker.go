@@ -186,6 +186,13 @@ func (d *DockerService) ListRunning(ctx context.Context) ([]string, error) {
 	return result, nil
 }
 
+// Exec runs a command inside a running container via `docker exec`.
+// The real implementation (with exit code capture) lands in Task 2 of
+// Issue 04. This stub is kept minimal so the interface compiles everywhere.
+func (d *DockerService) Exec(ctx context.Context, containerID string, cmd []string) (engine.ExecResult, error) {
+	return engine.ExecResult{}, nil
+}
+
 // Cleanup removes orphaned axiom-* containers from prior crashed sessions.
 // Per Architecture Section 12.6: run orphan cleanup on startup.
 func (d *DockerService) Cleanup(ctx context.Context) error {

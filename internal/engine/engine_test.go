@@ -109,6 +109,9 @@ func (n *noopContainerService) ListRunning(ctx context.Context) ([]string, error
 	return nil, nil
 }
 func (n *noopContainerService) Cleanup(ctx context.Context) error { return nil }
+func (n *noopContainerService) Exec(ctx context.Context, id string, cmd []string) (ExecResult, error) {
+	return ExecResult{}, nil
+}
 
 type noopInferenceService struct{ available bool }
 

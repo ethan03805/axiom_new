@@ -33,6 +33,10 @@ func (m *recoveryContainerService) Cleanup(ctx context.Context) error {
 	return m.cleanupErr
 }
 
+func (m *recoveryContainerService) Exec(ctx context.Context, id string, cmd []string) (ExecResult, error) {
+	return ExecResult{}, nil
+}
+
 func newRecoveryEngine(t *testing.T, root string, containers *recoveryContainerService) *Engine {
 	t.Helper()
 

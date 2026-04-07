@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"time"
 
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/state"
@@ -33,12 +34,27 @@ type ContainerSpec struct {
 	TimeoutMs int64
 }
 
+// ExecResult holds the outcome of running a command inside a container via
+// docker exec. Per Architecture Section 13.5, the DockerCheckRunner uses this
+// to turn profile commands (go build, npm test, …) into CheckResults.
+type ExecResult struct {
+	ExitCode int
+	Stdout   string
+	Stderr   string
+	Duration time.Duration
+}
+
 // ContainerService abstracts Docker container lifecycle for testability.
 type ContainerService interface {
 	Start(ctx context.Context, spec ContainerSpec) (string, error)
 	Stop(ctx context.Context, id string) error
 	ListRunning(ctx context.Context) ([]string, error)
 	Cleanup(ctx context.Context) error
+	// Exec runs a command inside a running container started via Start.
+	// Returns the exit code plus captured stdout/stderr. A non-zero exit code
+	// is NOT an error — it is a normal result. err is non-nil only on
+	// infrastructure failures (container not found, docker daemon down).
+	Exec(ctx context.Context, containerID string, cmd []string) (ExecResult, error)
 }
 
 // InferenceMessage represents a single message in an inference conversation.
