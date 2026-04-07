@@ -64,7 +64,7 @@ func TestDockerCheckRunner_GoProfile_AllPass(t *testing.T) {
 
 func TestDockerCheckRunner_GoProfile_CompileFailBlocks(t *testing.T) {
 	exec := &scriptedExec{results: map[string]engine.ExecResult{
-		"sh -c go build ./...": {
+		"sh -c cd /workspace/project && go build ./...": {
 			ExitCode: 2,
 			Stderr:   "main.go:1:1: expected 'package', found EOF",
 			Duration: 10 * time.Millisecond,
@@ -171,9 +171,28 @@ func TestDockerCheckRunner_NoLanguagesProducesSkip(t *testing.T) {
 	}
 }
 
+// TestDockerCheckRunner_UsesWorkspaceProjectAsCwd asserts the runner
+// prefixes every profile command with `cd /workspace/project && ` so the
+// sandbox evaluates commands against the mounted project root rather than
+// whatever cwd the base image defaults to.
+func TestDockerCheckRunner_UsesWorkspaceProjectAsCwd(t *testing.T) {
+	exec := &scriptedExec{results: map[string]engine.ExecResult{}}
+	runner := NewDockerCheckRunner(exec, testLogger())
+
+	_ = runner.Run(context.Background(), "sandbox-1", []string{"go"}, false)
+
+	if len(exec.calls) == 0 {
+		t.Fatal("expected at least one exec call")
+	}
+	cmd := strings.Join(exec.calls[0], " ")
+	if !strings.Contains(cmd, "cd /workspace/project && ") {
+		t.Fatalf("first exec = %q, want it to cd into /workspace/project", cmd)
+	}
+}
+
 func TestDockerCheckRunner_DependencyCacheMissDetected(t *testing.T) {
 	exec := &scriptedExec{results: map[string]engine.ExecResult{
-		"sh -c go build ./...": {
+		"sh -c cd /workspace/project && go build ./...": {
 			ExitCode: 1,
 			Stderr:   "go: dependency_cache_miss for lockfile hash abc123",
 		},

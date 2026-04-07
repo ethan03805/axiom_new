@@ -78,8 +78,12 @@ func (r *DockerCheckRunner) runOne(ctx context.Context, containerID string, chec
 		return CheckResult{CheckType: checkType, Status: state.ValidationSkip}
 	}
 	// Wrap in `sh -c` so the profile commands (which may use pipes or
-	// relative paths) run in a shell inside the sandbox.
-	cmd := []string{"sh", "-c", commandLine}
+	// relative paths) run in a shell inside the sandbox. Always cd into
+	// /workspace/project first — validation.BuildSandboxSpec mounts the
+	// project there, and the base image's default cwd is not guaranteed
+	// to match. This fixes the stage 5 path where StagingDir is empty
+	// and only /workspace/project is mounted.
+	cmd := []string{"sh", "-c", "cd /workspace/project && " + commandLine}
 	start := time.Now()
 	execResult, err := r.containers.Exec(ctx, containerID, cmd)
 	duration := time.Since(start).Milliseconds()

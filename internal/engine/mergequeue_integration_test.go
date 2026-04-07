@@ -68,7 +68,7 @@ func TestMergeQueue_RealValidator_BlocksBrokenGoBuild(t *testing.T) {
 
 	scripted := &scriptedExecContainers{
 		execResults: map[string]engine.ExecResult{
-			"sh -c go build ./...": {
+			"sh -c cd /workspace/project && go build ./...": {
 				ExitCode: 2,
 				Stderr:   "pkg/foo.go:1:1: expected 'package', found 'bad'",
 				Duration: 5 * time.Millisecond,
