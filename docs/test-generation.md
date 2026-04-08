@@ -12,7 +12,7 @@ The test-generation system enforces architecture-mandated independence between i
 2. **Convergence State Layer** (`internal/state/convergence.go`) -- Persists the relationship between implementation, test, and fix tasks with lifecycle tracking.
 3. **Scheduler Integration** (`internal/scheduler/`) -- The `FamilyExcluder` interface ensures test-type tasks are dispatched with a different model family than the implementation.
 
-Current runtime note: the service and scheduler-family-exclusion pieces are implemented. Automatic merge-success hooks that call `CreateTestTask`, plus automatic completion hooks that call `MarkConverged`, are still explicit/orchestrator-driven rather than engine-wired.
+Runtime wiring: the engine's merge-queue adapter (`internal/engine/mergequeue.go`) automatically calls `CreateTestTask` after an implementation task merges, `MarkConverged` after a test task or fix task merges, and `HandleTestFailure` when a test task's merge-queue integration checks fail against committed code. `MarkBlocked` is invoked from `internal/engine/executor.go` (`failAttempt`) when a test meeseeks exhausts retries and the task service returns `TaskFailureBlock`. `Engine.CompleteRun` refuses to complete a run while any convergence pair is non-converged (`internal/engine/run.go`).
 
 ## Architecture Principles
 
@@ -107,7 +107,7 @@ err := svc.MarkConverged(ctx, "impl-task-001")
 
 Validates the test task is done before transitioning to `converged`. Sets the `converged_at` timestamp. Emits a `testgen_converged` event.
 
-Current runtime note: this method is not yet invoked automatically when a test task finishes; orchestration code must call it explicitly.
+Runtime hook: `mergeQueueTaskAdapter.CompleteTask` in `internal/engine/mergequeue.go` invokes this automatically after a test-type task merges and after a fix-type task merges (resolving the convergence pair that owned the fix task).
 
 ### Feature Completion Check
 
@@ -120,46 +120,51 @@ Per Architecture Section 11.5: a feature is not considered `done` until this ret
 
 ### Blocking Convergence
 
-When fix task retries are exhausted and the orchestrator determines the convergence cannot be achieved:
+When a test-type meeseeks exhausts all its retries and escalations, the task service's decision tree (see `internal/task/service.go` and Architecture §30.1) returns `TaskFailureBlock`:
 
 ```go
 err := svc.MarkBlocked(ctx, "impl-task-001")
 ```
 
-Emits a `testgen_blocked` event. The orchestrator may restructure the task.
+Emits a `testgen_blocked` event. A blocked pair counts as non-converged for the `Engine.CompleteRun` gate, so the run cannot silently pass completion while a blocked pair exists — an operator must intervene (restructure the task, cancel the run, or escalate).
+
+Runtime hook: `Engine.failAttempt` in `internal/engine/executor.go` invokes `MarkBlocked` automatically when the task service's `HandleTaskFailure` returns `TaskFailureBlock` for a test-type task. Meeseeks-level failures on any other task type still funnel through the standard retry/escalate/block decision tree without touching the convergence pair.
 
 ## Convergence Lifecycle
 
-Current runtime note: this is the intended service lifecycle. The merge queue and task-completion paths do not yet trigger these calls automatically.
+Runtime lifecycle, fully engine-wired as of Issue 05:
 
 ```text
-Implementation task has merged successfully
+Implementation task has merged successfully (mergeQueueTaskAdapter.CompleteTask)
   |
-  +-> Orchestration code calls CreateTestTask(implTaskID)
+  +-> dispatchImplementationMerge calls testgen.CreateTestTask(implTaskID)
   |    Creates test task + convergence pair (status: testing)
   |
-  +-> Scheduler dispatches test task with excludeFamily
-  |    Different model family from implementation
+  +-> Scheduler dispatches test task via engineFamilyExcluder
+  |    (different model family from implementation)
   |
-  +-> Test task succeeds (status: done)
-  |    +-> Orchestration code calls MarkConverged(implTaskID)
-  |    |    Convergence achieved (status: converged)
-  |    |    Feature is done
-  |    |
-  |    +-> (no automatic hook yet; waits for explicit mark)
+  +-> Test task merges successfully (mergeQueueTaskAdapter.CompleteTask)
+  |    +-> dispatchTestMerge calls testgen.MarkConverged(implTaskID)
+  |         Convergence achieved (status: converged)
+  |         Feature is done
   |
-  +-> Test task fails (status: failed)
-       +-> HandleTestFailure(testTaskID, failureOutput)
-       |    Creates fix task (status: fixing, iteration++)
-       |    Fix task goes through normal approval pipeline
-       |
-       +-> Fix task merges -> new test run needed
-       |    (orchestration code creates the next test task cycle)
-       |
-       +-> Fix exhausts retries
-            +-> MarkBlocked(implTaskID)
-            |    Convergence blocked
-            +-> Orchestrator restructures
+  +-> Test task merge-queue integration checks fail
+  |    (mergeQueueTaskAdapter.RequeueTask)
+  |    +-> Test task transitioned to TaskFailed (not requeued)
+  |    +-> testgen.HandleTestFailure spawns fix task
+  |         Convergence pair transitions to fixing, iteration++
+  |    +-> Fix task runs through normal pipeline and merges
+  |         +-> dispatchImplementationMerge recognises it is a fix task
+  |              (task ID matches an existing pair.fix_task_id)
+  |         +-> testgen.MarkConverged(implTaskID)
+  |              Convergence achieved
+  |
+  +-> Test meeseeks exhausts all retries (Engine.failAttempt)
+       +-> taskService.HandleTaskFailure returns TaskFailureBlock
+       +-> testgen.MarkBlocked(implTaskID)
+            Convergence blocked
+            Engine.CompleteRun will refuse to complete the run until
+            this pair is resolved (blocked status is not converged).
 ```
 
 ## Database Schema

@@ -245,14 +245,13 @@ The test-generation service enforces the separate-task, different-model-family w
 
 The lifecycle:
 1. Implementation merges successfully via the merge queue.
-2. Orchestration code calls the test-generation service to create a dependent test task with the implementation's model family excluded.
-3. The test task is dispatched to a different model family (e.g., if implementation used Claude, tests use GPT).
-4. If tests pass, the feature is marked as converged (done).
-5. If tests fail, an implementation-fix task is created with the failing test output as context, and the fix goes through the full approval pipeline.
+2. The merge-queue adapter (`mergeQueueTaskAdapter.CompleteTask`) automatically calls `testgen.CreateTestTask` to spawn a dependent test task with the implementation's model family recorded on a `convergence_pairs` row.
+3. The scheduler dispatches the test task with `excludeFamily` set, so it runs on a different model family (e.g., if implementation used Claude, tests use GPT).
+4. If the test task merges successfully, the adapter automatically calls `testgen.MarkConverged` and the convergence pair transitions to `converged` — the feature is done.
+5. If the test task's merge-queue integration checks reject the generated tests, `RequeueTask` routes the failure through `testgen.HandleTestFailure`, which spawns an implementation-fix task containing the failing test output. Once the fix task merges, the adapter recognises it as a fix task and marks the original pair converged.
+6. If the test meeseeks exhausts all retries, `Engine.failAttempt` calls `testgen.MarkBlocked` on the pair.
 
-A feature is not considered complete until both the implementation and its generated tests converge. This is tracked via convergence pairs in the database.
-
-Current implementation note: the service API and scheduler family-exclusion logic are implemented, but automatic post-merge `CreateTestTask` / `MarkConverged` calls are not yet wired into the engine runtime.
+A feature is not considered complete until both the implementation and its generated tests converge. This is tracked via convergence pairs in the database, and `Engine.CompleteRun` refuses to transition a run to `completed` while any pair is non-converged.
 
 See [Test-Generation Separation Reference](test-generation.md) for implementation details.
 

@@ -116,7 +116,7 @@ func New(opts Options) (*Engine, error) {
 		Validator:  &mergeQueueValidatorAdapter{validation: opts.Validation, cfg: opts.Config, log: opts.Log},
 		Indexer:    &mergeQueueIndexAdapter{index: opts.Index},
 		Locks:      &mergeQueueLockAdapter{sched: e.sched},
-		Tasks:      &mergeQueueTaskAdapter{db: opts.DB, sched: e.sched, log: opts.Log},
+		Tasks:      &mergeQueueTaskAdapter{db: opts.DB, sched: e.sched, testGen: e.testGen, log: opts.Log},
 		Events:     &mergeQueueEventAdapter{bus: bus},
 		Attempts:   &mergeQueueAttemptAdapter{db: opts.DB, rootDir: opts.RootDir, log: opts.Log},
 	})

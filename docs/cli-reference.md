@@ -113,6 +113,8 @@ The engine provides run lifecycle methods that enforce state machine transitions
 | Complete run | `active` -> `completed` | `run_completed` |
 | Fail run | `active` -> `error` | `run_error` |
 
+> **Convergence gate on `CompleteRun`.** Per Architecture §11.5, `Engine.CompleteRun` refuses to transition a run to `completed` while any convergence pair for the run is not in `converged` status. Attempts to complete a run with open/testing/fixing/blocked pairs return a structured error that names the blocking impl tasks, and the run stays in `active`. `CancelRun` and `FailRun` bypass this gate by design (they record outcomes that differ from "completed").
+
 ## Engine SRS Lifecycle (Phase 9)
 
 The SRS approval state machine governs how a run transitions from draft to active execution. See [SRS and ECO Reference](srs-eco.md) for details.

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -394,6 +395,169 @@ func TestFailRun(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out")
+	}
+}
+
+// TestCompleteRun_BlockedByPendingConvergence verifies that CompleteRun
+// refuses to transition an active run to completed while any convergence
+// pair is non-converged. Per Architecture §11.5.
+func TestCompleteRun_BlockedByPendingConvergence(t *testing.T) {
+	e := testEngine(t)
+
+	if err := e.DB().CreateProject(&state.Project{
+		ID: "proj-1", RootPath: e.RootDir(), Name: "test", Slug: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := e.CreateRun(RunOptions{ProjectID: "proj-1", BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DB().UpdateRunStatus(run.ID, state.RunAwaitingSRSApproval); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DB().UpdateRunStatus(run.ID, state.RunActive); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed an impl task and a pending convergence pair (testing status).
+	if err := e.DB().CreateTask(&state.Task{
+		ID:       "impl-1",
+		RunID:    run.ID,
+		Title:    "Impl X",
+		Status:   state.TaskDone,
+		Tier:     state.TierStandard,
+		TaskType: state.TaskTypeImplementation,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := e.DB().CreateConvergencePair(&state.ConvergencePair{
+		ImplTaskID:      "impl-1",
+		Status:          state.ConvergenceTesting,
+		ImplModelFamily: "anthropic",
+	}); err != nil {
+		t.Fatalf("CreateConvergencePair: %v", err)
+	}
+
+	err = e.CompleteRun(run.ID)
+	if err == nil {
+		t.Fatal("CompleteRun should fail while a convergence pair is pending")
+	}
+	if !strings.Contains(err.Error(), "impl-1") {
+		t.Fatalf("error should name the blocking impl task, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "testing") {
+		t.Fatalf("error should describe the pair status, got %q", err)
+	}
+
+	after, err := e.DB().GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status == state.RunCompleted {
+		t.Fatalf("run status = %q, want still active", after.Status)
+	}
+}
+
+// TestCompleteRun_AllowedAfterConvergence verifies that once every
+// convergence pair for the run is marked converged, CompleteRun succeeds.
+func TestCompleteRun_AllowedAfterConvergence(t *testing.T) {
+	e := testEngine(t)
+
+	if err := e.DB().CreateProject(&state.Project{
+		ID: "proj-1", RootPath: e.RootDir(), Name: "test", Slug: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := e.CreateRun(RunOptions{ProjectID: "proj-1", BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DB().UpdateRunStatus(run.ID, state.RunAwaitingSRSApproval); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DB().UpdateRunStatus(run.ID, state.RunActive); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.DB().CreateTask(&state.Task{
+		ID:       "impl-1",
+		RunID:    run.ID,
+		Title:    "Impl X",
+		Status:   state.TaskDone,
+		Tier:     state.TierStandard,
+		TaskType: state.TaskTypeImplementation,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	cpID, err := e.DB().CreateConvergencePair(&state.ConvergencePair{
+		ImplTaskID:      "impl-1",
+		Status:          state.ConvergenceTesting,
+		ImplModelFamily: "anthropic",
+	})
+	if err != nil {
+		t.Fatalf("CreateConvergencePair: %v", err)
+	}
+	if err := e.DB().UpdateConvergencePairStatus(cpID, state.ConvergenceConverged); err != nil {
+		t.Fatalf("UpdateConvergencePairStatus: %v", err)
+	}
+
+	if err := e.CompleteRun(run.ID); err != nil {
+		t.Fatalf("CompleteRun: %v", err)
+	}
+	after, err := e.DB().GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != state.RunCompleted {
+		t.Fatalf("run status = %q, want completed", after.Status)
+	}
+}
+
+// TestCompleteRun_BlockedByBlockedPair verifies that a blocked convergence
+// pair (meeseeks exhausted on the test task) also prevents completion.
+func TestCompleteRun_BlockedByBlockedPair(t *testing.T) {
+	e := testEngine(t)
+
+	if err := e.DB().CreateProject(&state.Project{
+		ID: "proj-1", RootPath: e.RootDir(), Name: "test", Slug: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := e.CreateRun(RunOptions{ProjectID: "proj-1", BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DB().UpdateRunStatus(run.ID, state.RunAwaitingSRSApproval); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DB().UpdateRunStatus(run.ID, state.RunActive); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.DB().CreateTask(&state.Task{
+		ID:       "impl-1",
+		RunID:    run.ID,
+		Title:    "Impl X",
+		Status:   state.TaskDone,
+		Tier:     state.TierStandard,
+		TaskType: state.TaskTypeImplementation,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := e.DB().CreateConvergencePair(&state.ConvergencePair{
+		ImplTaskID:      "impl-1",
+		Status:          state.ConvergenceBlocked,
+		ImplModelFamily: "anthropic",
+	}); err != nil {
+		t.Fatalf("CreateConvergencePair: %v", err)
+	}
+
+	if err := e.CompleteRun(run.ID); err == nil {
+		t.Fatal("CompleteRun should refuse a run with a blocked pair")
 	}
 }
 

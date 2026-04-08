@@ -281,8 +281,26 @@ func (e *Engine) failAttempt(ctx context.Context, task state.Task, attempt state
 	if e.tasks == nil {
 		return fmt.Errorf("task service unavailable")
 	}
-	_, err = e.tasks.HandleTaskFailure(ctx, task.ID, feedback)
-	return err
+	action, err := e.tasks.HandleTaskFailure(ctx, task.ID, feedback)
+	if err != nil {
+		return err
+	}
+
+	// Architecture §11.5 + §30.1: when a test-type task exhausts all retries
+	// and escalations the convergence pair must be marked blocked so the run
+	// cannot silently pass the completion gate.
+	if action == TaskFailureBlock && task.TaskType == state.TaskTypeTest && e.testGen != nil {
+		cp, lookupErr := e.db.GetConvergencePairByTestTask(task.ID)
+		if lookupErr == nil && cp != nil {
+			if markErr := e.testGen.MarkBlocked(ctx, cp.ImplTaskID); markErr != nil {
+				e.log.Warn("testgen MarkBlocked failed",
+					"impl_task_id", cp.ImplTaskID,
+					"test_task_id", task.ID,
+					"error", markErr)
+			}
+		}
+	}
+	return nil
 }
 
 func (e *Engine) startMeeseeksContainer(ctx context.Context, task *state.Task, attempt *state.TaskAttempt, dirs ipc.Dirs) (string, error) {

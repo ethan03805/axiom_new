@@ -414,7 +414,7 @@ Phase 20 has started the stabilization and release hardening pass:
 - **Known remaining gaps**
   - `engine.CreateRun` persists `work_branch` metadata but does not yet call the git package's `SetupWorkBranch`, so branch checkout and dirty-tree enforcement are not active in the live `axiom run` path.
   - Axiom currently relies on a user-appointed external orchestrator for initial SRS generation. No embedded orchestrator is wired into live app flows, and the run prompt / `submit_srs` handoff is still incomplete.
-  - The test-generation service is implemented, but automatic `CreateTestTask` / `MarkConverged` hooks are still explicit/orchestrator-driven rather than engine-wired.
+  - ~~The test-generation service is implemented, but automatic `CreateTestTask` / `MarkConverged` hooks are still explicit/orchestrator-driven rather than engine-wired.~~ **Resolved by Issue 05 fix:** `mergeQueueTaskAdapter.CompleteTask` / `RequeueTask` and `Engine.failAttempt` now fire `CreateTestTask`, `MarkConverged`, `HandleTestFailure`, and `MarkBlocked` automatically. `Engine.CompleteRun` also refuses to complete a run while any convergence pair is non-converged.
 
 ### Phase 18 Summary
 
@@ -614,8 +614,8 @@ Phase 13 enforced architecture-mandated independence between implementation and 
   - `scheduler/testgen_test.go` (3 tests) — test task uses exclude family, impl task uses empty exclude family, nil FamilyExcluder backward compatibility.
 
 - **Known deferred items:**
-  - Automatic test task creation triggered by merge queue success events (currently `CreateTestTask` must be called explicitly by the orchestrator — Phase 16+)
-  - Automatic convergence detection when test tasks complete (currently `MarkConverged` must be called explicitly)
+  - ~~Automatic test task creation triggered by merge queue success events (currently `CreateTestTask` must be called explicitly by the orchestrator — Phase 16+)~~ **Resolved by Issue 05 fix:** `mergeQueueTaskAdapter.CompleteTask` → `dispatchImplementationMerge` calls `testgen.CreateTestTask` automatically after an implementation task merges.
+  - ~~Automatic convergence detection when test tasks complete (currently `MarkConverged` must be called explicitly)~~ **Resolved by Issue 05 fix:** `mergeQueueTaskAdapter.CompleteTask` → `dispatchTestMerge` calls `testgen.MarkConverged` after a test-task merge, and `dispatchImplementationMerge` recognises fix-task merges and calls `MarkConverged` on the original impl. `RequeueTask` routes test-merge failures through `testgen.HandleTestFailure`, and `Engine.failAttempt` calls `testgen.MarkBlocked` when a test meeseeks exhausts retries. `Engine.CompleteRun` gates run completion on all convergence pairs being in `converged` status.
   - Context packaging of committed implementation + semantic index for test-generation TaskSpecs (the convergence pair tracks the data; TaskSpec construction is orchestrator responsibility)
 
 See [Test-Generation Separation Reference](test-generation.md) for the full API.

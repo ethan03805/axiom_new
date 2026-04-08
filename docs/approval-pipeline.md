@@ -4,6 +4,17 @@ The approval pipeline is the mechanism by which Meeseeks output moves from conta
 
 Current runtime note: the live engine now wires the scheduler, execution worker, and merge queue together. Ready tasks are dispatched by the scheduler, executed by the engine's attempt executor, passed through manifest validation / sandbox checks / review, and then committed through the serialized merge queue.
 
+### Post-merge test-generation hooks (Architecture §11.5)
+
+After the merge queue commits a task, `mergeQueueTaskAdapter.CompleteTask` dispatches on `task_type` to drive the convergence lifecycle:
+
+1. **Implementation merge → test task.** When a regular implementation task merges, the adapter calls `testgen.CreateTestTask`, which inserts a `<impl-id>-test` task in `queued` status and creates a `convergence_pairs` row (`status=testing`) recording the impl's model family. The scheduler's next tick dispatches the test task onto a *different* family via `engineFamilyExcluder`.
+2. **Test task merge → converged.** When the test task merges successfully (its generated tests passed the merge-queue integration checks against committed code), the adapter calls `testgen.MarkConverged`, transitioning the pair to `converged` and setting `converged_at`.
+3. **Test merge failure → fix task.** When the merge queue's integration checks reject a test-task output, `mergeQueueTaskAdapter.RequeueTask` branches on `task_type == test` and routes the failure through `testgen.HandleTestFailure` instead of the normal `failed → queued` retry. The test task stays in `failed` and a new `<impl-id>-fix-<iteration>` implementation task is spawned with the failure output embedded in its description.
+4. **Fix task merge → converged.** When a fix task merges, `dispatchImplementationMerge` recognises that the completed task ID is the `fix_task_id` of an existing pair in the same run and calls `testgen.MarkConverged` on the original impl task.
+5. **Test meeseeks exhausted → blocked.** When a test-type task exhausts all retries and `taskService.HandleTaskFailure` returns `TaskFailureBlock`, `Engine.failAttempt` calls `testgen.MarkBlocked` on the impl task, moving the pair to `blocked`.
+6. **Run completion gate.** `Engine.CompleteRun` refuses to transition a run to `completed` while any convergence pair in the run is not in `converged` status, returning a structured error listing the blocking impl tasks and their pair statuses. `CancelRun` and `FailRun` bypass this gate by design.
+
 Per Architecture Section 14.2, the pipeline has five stages:
 
 ```
@@ -434,7 +445,7 @@ After an implementation task successfully merges, the test-generation system (Ar
 5. The fix task goes through the full approval pipeline (manifest → validation → review → merge).
 6. A feature is not considered done until `testgen.IsFeatureDone()` returns true (convergence achieved).
 
-Current engine note: the service and scheduler hooks are implemented, but merge-queue success does not yet call `CreateTestTask` automatically.
+Runtime wiring: the merge-queue adapter (`mergeQueueTaskAdapter` in `internal/engine/mergequeue.go`) now calls `CreateTestTask` automatically on implementation merge, `MarkConverged` on test-task or fix-task merge, and `HandleTestFailure` on a failing test-task merge. `Engine.failAttempt` (`internal/engine/executor.go`) calls `MarkBlocked` when a test-type meeseeks exhausts its retries. `Engine.CompleteRun` (`internal/engine/run.go`) refuses to complete a run while any convergence pair is non-converged. See the "Post-merge test-generation hooks" subsection at the top of this document for the full flow.
 
 See [Test-Generation Separation Reference](test-generation.md) for the full API.
 

@@ -477,3 +477,171 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
 	}
 	t.Fatal("condition not reached before timeout")
 }
+
+// TestFailAttempt_TestTaskBlock_MarksConvergenceBlocked verifies that when a
+// test-type task exhausts its retries and the task service returns
+// TaskFailureBlock, Engine.failAttempt reaches into the testgen service to
+// mark the impl's convergence pair blocked. Architecture §11.5 + §30.1.
+func TestFailAttempt_TestTaskBlock_MarksConvergenceBlocked(t *testing.T) {
+	engineUnderTest, _, _, _, _ := newExecutorEngine(t, executorEngineOptions{})
+
+	// The default task-service mock returns TaskFailureRetry; flip it to
+	// Block for this test so failAttempt reaches the MarkBlocked hook.
+	taskSvc := engineUnderTest.tasks.(*mockTaskService)
+	taskSvc.failureAction = TaskFailureBlock
+
+	runID := seedActiveRun(t, engineUnderTest, "run-block")
+
+	// Seed a done impl task with a passed attempt so testgen.CreateTestTask
+	// can record the impl model family on the convergence pair.
+	if err := engineUnderTest.db.CreateTask(&state.Task{
+		ID:       "impl-1",
+		RunID:    runID,
+		Title:    "Impl X",
+		Status:   state.TaskDone,
+		Tier:     state.TierStandard,
+		TaskType: state.TaskTypeImplementation,
+	}); err != nil {
+		t.Fatalf("CreateTask(impl): %v", err)
+	}
+	if _, err := engineUnderTest.db.CreateAttempt(&state.TaskAttempt{
+		TaskID:        "impl-1",
+		AttemptNumber: 1,
+		ModelID:       "anthropic/claude",
+		ModelFamily:   "anthropic",
+		Tier:          state.TierStandard,
+		BaseSnapshot:  "base-sha",
+		Status:        state.AttemptPassed,
+		Phase:         state.PhaseSucceeded,
+	}); err != nil {
+		t.Fatalf("CreateAttempt(impl): %v", err)
+	}
+
+	if _, err := engineUnderTest.testGen.CreateTestTask(context.Background(), "impl-1"); err != nil {
+		t.Fatalf("CreateTestTask: %v", err)
+	}
+
+	// Drive the test task into in_progress and create a running attempt on it.
+	if err := engineUnderTest.db.UpdateTaskStatus("impl-1-test", state.TaskInProgress); err != nil {
+		t.Fatalf("mark test in_progress: %v", err)
+	}
+	testAttemptID, err := engineUnderTest.db.CreateAttempt(&state.TaskAttempt{
+		TaskID:        "impl-1-test",
+		AttemptNumber: 1,
+		ModelID:       "openai/gpt",
+		ModelFamily:   "openai",
+		Tier:          state.TierStandard,
+		BaseSnapshot:  "base-sha",
+		Status:        state.AttemptRunning,
+		Phase:         state.PhaseExecuting,
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt(test): %v", err)
+	}
+	testTask, err := engineUnderTest.db.GetTask("impl-1-test")
+	if err != nil {
+		t.Fatalf("GetTask(test): %v", err)
+	}
+	testAttempt, err := engineUnderTest.db.GetAttempt(testAttemptID)
+	if err != nil {
+		t.Fatalf("GetAttempt(test): %v", err)
+	}
+
+	if err := engineUnderTest.failAttempt(context.Background(), *testTask, *testAttempt,
+		"test meeseeks exhausted all retries"); err != nil {
+		t.Fatalf("failAttempt: %v", err)
+	}
+
+	cp, err := engineUnderTest.db.GetConvergencePairByImplTask("impl-1")
+	if err != nil {
+		t.Fatalf("GetConvergencePairByImplTask: %v", err)
+	}
+	if cp.Status != state.ConvergenceBlocked {
+		t.Fatalf("convergence status = %q, want blocked", cp.Status)
+	}
+}
+
+// TestFailAttempt_ImplTaskBlock_DoesNotMarkConvergence verifies that a
+// Block action on a non-test task does NOT touch any convergence pair even
+// if one exists for the same run.
+func TestFailAttempt_ImplTaskBlock_DoesNotMarkConvergence(t *testing.T) {
+	engineUnderTest, _, _, _, _ := newExecutorEngine(t, executorEngineOptions{})
+	taskSvc := engineUnderTest.tasks.(*mockTaskService)
+	taskSvc.failureAction = TaskFailureBlock
+
+	runID := seedActiveRun(t, engineUnderTest, "run-impl-block")
+
+	// Seed an unrelated done impl + passed attempt + convergence pair in
+	// state.ConvergenceTesting — this pair must NOT be touched.
+	if err := engineUnderTest.db.CreateTask(&state.Task{
+		ID:       "impl-1",
+		RunID:    runID,
+		Title:    "Impl X",
+		Status:   state.TaskDone,
+		Tier:     state.TierStandard,
+		TaskType: state.TaskTypeImplementation,
+	}); err != nil {
+		t.Fatalf("CreateTask(impl-1): %v", err)
+	}
+	if _, err := engineUnderTest.db.CreateAttempt(&state.TaskAttempt{
+		TaskID:        "impl-1",
+		AttemptNumber: 1,
+		ModelID:       "anthropic/claude",
+		ModelFamily:   "anthropic",
+		Tier:          state.TierStandard,
+		BaseSnapshot:  "base-sha",
+		Status:        state.AttemptPassed,
+		Phase:         state.PhaseSucceeded,
+	}); err != nil {
+		t.Fatalf("CreateAttempt(impl-1): %v", err)
+	}
+	if _, err := engineUnderTest.testGen.CreateTestTask(context.Background(), "impl-1"); err != nil {
+		t.Fatalf("CreateTestTask: %v", err)
+	}
+
+	// Seed an unrelated failing impl task.
+	if err := engineUnderTest.db.CreateTask(&state.Task{
+		ID:       "impl-2",
+		RunID:    runID,
+		Title:    "Impl Y",
+		Status:   state.TaskInProgress,
+		Tier:     state.TierStandard,
+		TaskType: state.TaskTypeImplementation,
+	}); err != nil {
+		t.Fatalf("CreateTask(impl-2): %v", err)
+	}
+	attemptID, err := engineUnderTest.db.CreateAttempt(&state.TaskAttempt{
+		TaskID:        "impl-2",
+		AttemptNumber: 1,
+		ModelID:       "anthropic/claude",
+		ModelFamily:   "anthropic",
+		Tier:          state.TierStandard,
+		BaseSnapshot:  "base-sha",
+		Status:        state.AttemptRunning,
+		Phase:         state.PhaseExecuting,
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt(impl-2): %v", err)
+	}
+	failingTask, err := engineUnderTest.db.GetTask("impl-2")
+	if err != nil {
+		t.Fatalf("GetTask(impl-2): %v", err)
+	}
+	failingAttempt, err := engineUnderTest.db.GetAttempt(attemptID)
+	if err != nil {
+		t.Fatalf("GetAttempt(impl-2): %v", err)
+	}
+
+	if err := engineUnderTest.failAttempt(context.Background(), *failingTask, *failingAttempt,
+		"bogus"); err != nil {
+		t.Fatalf("failAttempt: %v", err)
+	}
+
+	cp, err := engineUnderTest.db.GetConvergencePairByImplTask("impl-1")
+	if err != nil {
+		t.Fatalf("GetConvergencePairByImplTask: %v", err)
+	}
+	if cp.Status != state.ConvergenceTesting {
+		t.Fatalf("convergence status = %q, want testing (unchanged)", cp.Status)
+	}
+}

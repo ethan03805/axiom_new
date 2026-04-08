@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/events"
@@ -195,8 +196,27 @@ func (e *Engine) CancelRun(runID string) error {
 	return nil
 }
 
-// CompleteRun transitions a run to completed.
+// CompleteRun transitions a run to completed. Per Architecture §11.5, a run
+// cannot complete while any implementation task has an open convergence pair:
+// the feature is not done until the impl and its generated tests have merged
+// and the pair is marked converged. CancelRun and FailRun bypass this gate on
+// purpose — they record run outcomes that differ from "completed".
 func (e *Engine) CompleteRun(runID string) error {
+	pairs, err := e.db.ListConvergencePairsByRun(runID)
+	if err != nil {
+		return fmt.Errorf("listing convergence pairs for run %s: %w", runID, err)
+	}
+	var blocking []string
+	for _, cp := range pairs {
+		if cp.Status != state.ConvergenceConverged {
+			blocking = append(blocking, fmt.Sprintf("%s(%s)", cp.ImplTaskID, cp.Status))
+		}
+	}
+	if len(blocking) > 0 {
+		return fmt.Errorf("cannot complete run %s: %d convergence pair(s) still open: %s",
+			runID, len(blocking), strings.Join(blocking, ", "))
+	}
+
 	if err := e.db.UpdateRunStatus(runID, state.RunCompleted); err != nil {
 		return fmt.Errorf("completing run: %w", err)
 	}
