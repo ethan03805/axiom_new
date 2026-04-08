@@ -171,16 +171,19 @@ The TUI layout is full-screen and composed of:
 | `/status` | Show project status, run state, budget, tasks |
 | `/tasks` | Show task breakdown by status |
 | `/budget` | Show budget details and warnings |
-| `/srs` | View SRS approval state |
-| `/eco` | View pending ECOs |
-| `/diff` | Preview latest changes |
-| `/new` | Start a new bootstrap session |
-| `/resume` | Resume an existing session |
+| `/srs` | View the SRS draft (awaiting approval) or approved SRS (active) |
+| `/approve` | Approve the SRS draft — transitions the run to `active` |
+| `/reject "<feedback>"` | Reject the SRS draft with feedback — returns the run to `draft_srs` |
+| `/eco` | List ECOs for the active run (CLI required to approve/reject) |
+| `/diff` | Preview `git diff <base>...<work>` for the active run (truncated at 4 KB) |
+| `/new [prompt]` | Start a new bootstrap run. Inline form: `/new Build a REST API`. Bare form clears the composer. |
+| `/resume` | Resume the paused run for this project (equivalent to `axiom resume`) |
 | `/pause` | Pause active execution |
 | `/cancel` | Cancel active execution |
 | `/clear` | Clear visible transcript (preserves session state) |
-| `/theme` | Switch display theme (deferred) |
 | `/help` | Show all commands and keyboard shortcuts |
+
+> **Issue 08 fix note:** Prior to this release, `/new`, `/resume`, `/eco`, `/diff`, and the execution branch of `/srs` all returned canned strings without touching the engine. They are now wired to `Engine.StartRun`, `Engine.ResumeRun`, `DB.ListECOsByRun`, `GitService.DiffRange`, and `Engine.ReadSRSDraft` respectively. `/theme` was removed — only the default `axiom` theme is available.
 
 ### Input Model
 
@@ -201,7 +204,30 @@ The TUI subscribes to the engine event bus and handles:
 | `session_mode_changed` | Update mode display |
 | `approval_requested` | Add approval card to transcript |
 | `diff_preview_ready` | Notify user in transcript |
+| `run_created` | Call `refreshAfterStateChange` so the new run shows in the status bar |
+| `srs_submitted` | Hint the operator to use `/srs` + `/approve`/`/reject`, refresh frame |
+| `srs_approved` | Announce the transition, refresh frame |
+| `srs_rejected` | Announce the transition back to `draft_srs`, refresh frame |
 | Other authoritative events | Collapsed single-line entries |
+
+### Write Operations from the TUI
+
+The TUI routes the following operations directly to `internal/engine` — no
+external CLI invocation is required:
+
+| Operation | Entrypoint | TUI surface |
+|-----------|-----------|-------------|
+| Start a new run | `Engine.StartRun` | Regular bootstrap-mode prompt, or `/new "<prompt>"` |
+| Resume a paused run | `Engine.ResumeRun` | `/resume` |
+| Approve an SRS draft | `Engine.ApproveSRS` | `/approve` |
+| Reject an SRS draft | `Engine.RejectSRS` | `/reject "<feedback>"` |
+| Pause an active run | `Engine.PauseRun` | `/pause` |
+| Cancel an active run | `Engine.CancelRun` | `/cancel` |
+
+All write paths enforce the Architecture §28.2 clean-tree contract via
+`Engine.StartRun`'s internal `ValidateClean` call. The TUI does **not**
+expose an `--allow-dirty` bypass; dirty-tree recovery remains a
+deliberately inconvenient `axiom run --allow-dirty` CLI-only operation.
 
 ### Theme
 
@@ -353,8 +379,10 @@ The Session UX Manager emits these view-model events (Section 26.2.10) via the e
 
 - **File mention autocomplete** (`@` trigger) — slash command palette provides the extension point but autocomplete is not yet connected to the semantic index
 - **LLM-generated prompt suggestions** — deferred per Section 26.2.8; only deterministic heuristic suggestions are implemented
-- **Theme switching** — `/theme` command exists as a placeholder; only the default `axiom` theme is available
-- **Diff preview overlay** — `/diff` command returns a text message; full overlay with syntax highlighting is deferred
+- **Theme switching** — command not yet exposed; only the default `axiom` theme is available (the `/theme` placeholder was removed in the Issue 08 fix)
+- **Diff preview overlay** — `/diff` returns a truncated textual diff (first 4 KB); full overlay with syntax highlighting is deferred
+- **SRS and ECO overlays** — `/srs` and `/eco` render inline transcript output; dedicated scrollable overlays are deferred
+- **`/eco approve <code>` / `/eco reject <code>`** — ECO decision flow is deferred because the TUI does not yet track an approver identity; use the CLI `axiom eco approve/reject` commands
 - **Task inspection views** — task rail shows summary counts; individual task detail view is deferred
-- **Approval card overlays** — approvals appear as transcript entries; dedicated overlay dialogs are deferred
+- **Clarifications during execution** — free text typed during an active run is not routed to a sub-orchestrator; the TUI emits a hint and returns
 - **Shell mode execution** — `!` prefix captures intent but does not execute shell commands (engine-mediated execution is deferred)

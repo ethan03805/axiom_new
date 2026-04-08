@@ -105,6 +105,10 @@ func (n *noopGitService) ChangedFilesSince(dir, sinceRef string) ([]string, erro
 	return nil, nil
 }
 
+func (n *noopGitService) DiffRange(dir, base, head string) (string, error) {
+	return "", nil
+}
+
 type noopContainerService struct{}
 
 func (n *noopContainerService) Start(ctx context.Context, spec ContainerSpec) (string, error) {

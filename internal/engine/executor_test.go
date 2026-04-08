@@ -156,6 +156,7 @@ func (g *trackingGitService) Commit(_ string, message string) (string, error) {
 	return sha, nil
 }
 func (g *trackingGitService) ChangedFilesSince(string, string) ([]string, error) { return nil, nil }
+func (g *trackingGitService) DiffRange(string, string, string) (string, error)   { return "", nil }
 
 func TestExecuteAttempt_SuccessEnqueuesAndMerges(t *testing.T) {
 	engineUnderTest, containerSvc, validationSvc, reviewSvc, gitSvc := newExecutorEngine(t, executorEngineOptions{})

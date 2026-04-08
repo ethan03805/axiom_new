@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -40,6 +42,16 @@ type startupMsg struct{}
 
 // eventMsg wraps an engine event for the Bubble Tea update loop.
 type eventMsg events.EngineEvent
+
+// runStartedMsg is delivered back to Update when an async StartRun call
+// succeeds. It carries the newly created run so the transcript and action
+// card can be refreshed synchronously on the Bubble Tea goroutine.
+type runStartedMsg struct{ run *state.ProjectRun }
+
+// runStartFailedMsg is delivered back to Update when an async StartRun call
+// fails. The TUI renders the error in the transcript; it must not silently
+// swallow the error per the Architecture §28.2 clean-tree contract.
+type runStartFailedMsg struct{ err error }
 
 // Model is the main Bubble Tea model for the Axiom TUI (Section 26.2).
 type Model struct {
@@ -80,6 +92,12 @@ type Model struct {
 	// Input history
 	inputHistory []string
 	historyIdx   int
+
+	// pendingCmd is set by slash-command handlers that need to emit an
+	// asynchronous tea.Cmd (e.g. /new "<prompt>" must trigger StartRun off
+	// the Bubble Tea goroutine). submitInput drains this field after the
+	// handler returns so the command is dispatched exactly once.
+	pendingCmd tea.Cmd
 
 	ready bool
 }
@@ -139,6 +157,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case eventMsg:
 		m.handleEvent(events.EngineEvent(msg))
 		return m, m.listenForEvents()
+
+	case runStartedMsg:
+		// StartRun succeeded. Report the outcome in the transcript and
+		// refresh the action card so the operator sees the mode transition
+		// (draft_srs is still bootstrap — the mode label only changes when
+		// the external orchestrator submits an SRS draft — but the run
+		// metadata line makes the state visible immediately).
+		m.appendTranscript("system", "system_card",
+			fmt.Sprintf("Run created: %s on branch %s. Waiting for external orchestrator to submit SRS draft.",
+				msg.run.ID[:8], msg.run.WorkBranch))
+		m.refreshAfterStateChange()
+		return m, nil
+
+	case runStartFailedMsg:
+		m.appendTranscript("system", "system_card",
+			fmt.Sprintf("Failed to start run: %v. Commit or stash changes and try again.", msg.err))
+		return m, nil
 
 	case tea.KeyMsg:
 		if m.overlay != OverlayNone {
@@ -321,6 +356,22 @@ func (m *Model) handleEvent(ev events.EngineEvent) {
 		m.appendTranscript("system", "approval", desc)
 	case events.DiffPreviewReady:
 		m.appendTranscript("system", "event", "Diff preview available. Use /diff to view.")
+	case events.SRSSubmitted:
+		m.appendTranscript("system", "event",
+			"SRS draft submitted by the orchestrator. Use /srs to review, then /approve or /reject.")
+		m.refreshAfterStateChange()
+	case events.SRSApproved:
+		m.appendTranscript("system", "event", "SRS approved. Run transitioning to active.")
+		m.refreshAfterStateChange()
+	case events.SRSRejected:
+		m.appendTranscript("system", "event", "SRS rejected. Run returned to draft_srs.")
+		m.refreshAfterStateChange()
+	case events.RunCreated:
+		// RunCreated is emitted both by StartRun and CreateRun; the TUI
+		// path triggers a refresh regardless so the status bar and action
+		// card reflect the new run immediately. refreshAfterStateChange
+		// is idempotent when the mode is unchanged.
+		m.refreshAfterStateChange()
 	default:
 		// Log other events as collapsed entries
 		if !events.IsViewModelEvent(ev.Type) {
@@ -354,45 +405,129 @@ func (m *Model) appendTranscript(role, kind, content string) {
 	}
 }
 
+// submitInput dispatches an input line per Architecture §26.2.3:
+//   - A leading `/` routes to the slash-command handler.
+//   - A leading `!` echoes an honest "not yet routed" shell hint.
+//   - Otherwise the input is mode-aware: in bootstrap it creates a run via
+//     Engine.StartRun; in approval it nudges the operator toward /srs +
+//     /approve/reject; in execution and postrun it explains the surface.
+//
+// This method is the single most important fix for Issue 08. Prior to this,
+// regular input in bootstrap mode was silently swallowed into the transcript
+// while the operator waited for an engine call that never came.
 func (m *Model) submitInput(input string) tea.Cmd {
 	if strings.HasPrefix(input, "/") {
 		result := m.handleSlashCommand(input)
 		if result != "" {
 			m.appendTranscript("system", "system_card", result)
 		}
+		// Slash handlers may have returned an async command to execute.
+		if cmd := m.pendingCmd; cmd != nil {
+			m.pendingCmd = nil
+			return cmd
+		}
 		return nil
 	}
 
 	if strings.HasPrefix(input, "!") {
-		// Shell mode: display the command intent
+		// Shell mode: display the command intent. Shell-mode execution is
+		// explicitly deferred — the placeholder here is phrased as "not yet
+		// routed" rather than "handled by the engine" so operators are not
+		// misled into thinking their command ran.
 		shellCmd := strings.TrimPrefix(input, "!")
 		m.appendTranscript("user", "shell", "$ "+shellCmd)
-		m.appendTranscript("system", "event", "Shell execution is handled by the engine.")
+		m.appendTranscript("system", "event", "Shell execution is not yet routed; use a separate terminal.")
 		return nil
 	}
 
-	// Regular user message
+	// Echo user message + record history (always, regardless of mode).
 	m.appendTranscript("user", "user", input)
-
-	// Record in input history
 	if m.sess != nil {
 		_ = m.session.RecordInput(m.projectID, m.sess.ID, "prompt", input)
 	}
-
-	// Prepend to local history for up-arrow recall
 	m.inputHistory = append([]string{input}, m.inputHistory...)
 	m.historyIdx = -1
 
-	return nil
+	// Dispatch by mode — this is the §26.2.3 "route to engine subsystem"
+	// contract. Previously this method only appended to the transcript,
+	// which made the TUI misleading for non-technical operators (Issue 08).
+	switch m.mode {
+	case state.SessionBootstrap:
+		return m.startRunFromPrompt(input)
+	case state.SessionApproval:
+		m.appendTranscript("system", "system_card",
+			"To act on the SRS, use /srs to view the draft, then /approve or /reject \"feedback\".")
+		return nil
+	case state.SessionExecution:
+		m.appendTranscript("system", "ephemeral",
+			"User clarifications during execution are not yet routed to the orchestrator. "+
+				"Use /status, /tasks, /pause, or /cancel to observe or control the run.")
+		return nil
+	case state.SessionPostrun:
+		m.appendTranscript("system", "ephemeral",
+			"The run is complete. Use /diff to review changes, or start a new run with /new \"<prompt>\".")
+		return nil
+	default:
+		return nil
+	}
+}
+
+// startRunFromPrompt returns a tea.Cmd that invokes Engine.StartRun on a
+// background goroutine and delivers the outcome back via runStartedMsg /
+// runStartFailedMsg. StartRun enforces the clean-tree contract internally;
+// the TUI must NOT expose an --allow-dirty bypass — dirty-tree recovery
+// remains a deliberately inconvenient CLI-only escape hatch (Issue 06).
+func (m *Model) startRunFromPrompt(prompt string) tea.Cmd {
+	return func() tea.Msg {
+		run, err := m.engine.StartRun(engine.StartRunOptions{
+			ProjectID:  m.projectID,
+			Prompt:     prompt,
+			BaseBranch: "main",
+			Source:     "tui",
+		})
+		if err != nil {
+			return runStartFailedMsg{err: err}
+		}
+		return runStartedMsg{run: run}
+	}
+}
+
+// refreshAfterStateChange re-reads the startup summary and mode from the
+// session manager after any handler that mutates run state. This keeps the
+// status bar, action card, and task rail coherent with the underlying
+// engine state without requiring each handler to duplicate the refresh
+// logic. If the mode has not changed, the handler skips re-appending an
+// action card entry to avoid cosmetic double-rendering (see Issue 08 §6.1).
+func (m *Model) refreshAfterStateChange() {
+	previousMode := m.mode
+	summary, err := m.session.StartupSummary(m.projectID)
+	if err != nil {
+		m.log.Warn("failed to refresh startup summary after state change", "error", err)
+		m.mode = m.session.DetermineMode(m.projectID)
+		return
+	}
+	m.startup = summary
+	m.mode = summary.Mode
+	m.tasks = summary.Tasks
+	m.budget = summary.Budget
+	if previousMode != m.mode {
+		m.appendTranscript("system", "system_card", summary.ActionCard)
+	}
 }
 
 // handleSlashCommand processes a slash command and returns response text.
+// Handlers may also set m.pendingCmd to emit an asynchronous tea.Cmd.
+//
+// Previously five of the twelve declared commands (/new, /resume, /eco,
+// /diff, /theme) returned canned sentences without touching the engine.
+// The Issue 08 fix wires all of them (except /theme, which is removed).
 func (m *Model) handleSlashCommand(cmd string) string {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
 		return ""
 	}
 	command := strings.ToLower(parts[0])
+	args := parts[1:]
 
 	switch command {
 	case "/status":
@@ -407,24 +542,40 @@ func (m *Model) handleSlashCommand(cmd string) string {
 		m.transcript = nil
 		return ""
 	case "/new":
-		return "Start a new session by describing what you want to build."
+		return m.cmdNewRun(cmd, args)
 	case "/resume":
-		return "Use 'axiom session resume <id>' to resume a specific session."
+		return m.cmdResumeRun()
 	case "/pause":
 		return m.cmdPause()
 	case "/cancel":
 		return m.cmdCancel()
 	case "/srs":
 		return m.cmdSRS()
+	case "/approve":
+		return m.cmdApproveSRS()
+	case "/reject":
+		// /reject preserves inline quoting. Re-derive the raw argument
+		// string from the original command so quoted feedback like
+		// /reject "needs section 4.2" is passed through verbatim.
+		return m.cmdRejectSRS(rawArgs(cmd, "/reject"))
 	case "/eco":
-		return "ECO review: No pending ECOs."
+		return m.cmdECO()
 	case "/diff":
-		return "No diffs available. Run tasks to generate changes."
-	case "/theme":
-		return "Theme switching is not yet available."
+		return m.cmdDiff()
 	default:
 		return fmt.Sprintf("Unknown command: %s. Type /help for available commands.", command)
 	}
+}
+
+// rawArgs returns the argument portion of a slash command line with the
+// prefix trimmed and surrounding whitespace normalized. It preserves
+// embedded whitespace inside quoted arguments, unlike strings.Fields.
+func rawArgs(line, prefix string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(strings.ToLower(trimmed), prefix) {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[len(prefix):])
 }
 
 func (m *Model) cmdStatus() string {
@@ -460,24 +611,36 @@ func (m *Model) cmdStatus() string {
 
 func (m *Model) cmdHelp() string {
 	return `Available commands:
-  /status  — Show project status and resources
-  /tasks   — Show task list
-  /budget  — Show budget details
-  /pause   — Pause active execution
-  /cancel  — Cancel active execution
-  /srs     — View SRS
-  /eco     — View ECOs
-  /diff    — Preview latest changes
-  /new     — Start a new bootstrap session
-  /resume  — Resume an existing session
-  /clear   — Clear transcript
-  /theme   — Switch display theme
-  /help    — Show this help
+
+  Bootstrap:
+    /new "<prompt>"  — Start a new run (or type the prompt directly)
+
+  Approval:
+    /srs             — View the SRS draft
+    /approve         — Approve the SRS draft
+    /reject "<fb>"   — Reject the SRS draft with feedback
+
+  Execution:
+    /tasks           — Show task list
+    /diff            — Preview changes on the work branch
+    /budget          — Show budget details
+    /pause           — Pause active execution
+    /cancel          — Cancel active execution
+
+  Postrun:
+    /diff            — Review final changes
+    /resume          — Resume a paused run
+    /new "<prompt>"  — Start a new run
+
+  Always:
+    /status          — Show project status
+    /eco             — List ECOs for the active run
+    /help            — Show this help
+    /clear           — Clear transcript
 
 Shortcuts:
-  /  — Open slash command palette
-  !  — Enter shell mode
-  @  — File mention autocomplete
+  /  — Slash command
+  !  — Shell mode (not yet routed; use a separate terminal)
   Ctrl+C — Quit`
 }
 
@@ -549,15 +712,195 @@ func (m *Model) cmdCancel() string {
 	return "Run cancelled."
 }
 
+// cmdSRS returns a view of the SRS state. Unlike the previous
+// placeholder that returned a status sentence, this handler actually
+// reads the draft from disk (awaiting-approval case) or the finalized
+// SRS (active/paused case), so operators can review the content
+// without leaving the TUI. Full overlay rendering is deferred.
 func (m *Model) cmdSRS() string {
-	switch m.mode {
-	case state.SessionApproval:
-		return "SRS is awaiting your review. Approve or reject."
-	case state.SessionExecution, state.SessionPostrun:
-		return "SRS has been approved and is locked."
-	default:
-		return "No SRS yet. Start a run to generate one."
+	run, err := m.engine.DB().GetActiveRun(m.projectID)
+	if err != nil {
+		return "No active run. Use /new \"<prompt>\" to start one."
 	}
+
+	switch run.Status {
+	case state.RunDraftSRS:
+		// Some orchestrators write the draft file early; prefer real content
+		// if present, otherwise report the waiting state honestly.
+		draft, readErr := m.engine.ReadSRSDraft(run.ID)
+		if readErr != nil {
+			return "Run " + run.ID[:8] + " is in draft_srs. " +
+				"Waiting for external orchestrator to submit an SRS draft."
+		}
+		return "--- SRS Draft (not yet submitted for approval) ---\n" + draft
+
+	case state.RunAwaitingSRSApproval:
+		draft, readErr := m.engine.ReadSRSDraft(run.ID)
+		if readErr != nil {
+			return "SRS draft is awaiting approval but the draft file was not found. " +
+				"Check .axiom/drafts/ or use 'axiom srs show' for diagnostics."
+		}
+		return "--- SRS Draft (awaiting approval) ---\n" + draft +
+			"\n\nUse /approve or /reject \"<feedback>\" to decide."
+
+	case state.RunActive, state.RunPaused:
+		// Read the finalized SRS if it exists on disk.
+		data, readErr := os.ReadFile(filepath.Join(m.engine.RootDir(), ".axiom", "srs.md"))
+		if readErr != nil {
+			return "SRS has been approved and is locked (file not readable here)."
+		}
+		return "--- Approved SRS ---\n" + string(data)
+
+	default:
+		return "No SRS available for run status " + string(run.Status) + "."
+	}
+}
+
+// cmdNewRun handles /new. Two forms are supported:
+//
+//  1. /new <prompt words...>  — treats the remainder after "/new " as the
+//     prompt and triggers StartRun. This mirrors the §26.2.6 expectation
+//     that /new maps to a bootstrap start.
+//  2. /new (bare)             — emits a hint telling the operator to type
+//     their prompt on the next line. This keeps the dual-form UX that
+//     some operators will expect (type /new first, then the prompt).
+//
+// If a run is already in progress, /new is refused. The error text names
+// /cancel explicitly so operators know exactly what to do next.
+func (m *Model) cmdNewRun(cmd string, args []string) string {
+	if m.mode != state.SessionBootstrap {
+		return "A run is already in progress; use /cancel first to start a new one."
+	}
+	if len(args) == 0 {
+		return "Type your prompt below and press Enter, or use /new \"<prompt>\" to submit inline."
+	}
+	prompt := strings.TrimSpace(rawArgs(cmd, "/new"))
+	// Operators may quote the prompt — strip surrounding quotes so the
+	// engine receives the human-readable text.
+	prompt = strings.TrimSpace(strings.Trim(prompt, "\""))
+	if prompt == "" {
+		return "Type your prompt below and press Enter, or use /new \"<prompt>\" to submit inline."
+	}
+	// Echo the operator's intent into the transcript for consistency with
+	// the regular-text path, then defer the engine call to the async Cmd.
+	m.appendTranscript("user", "user", prompt)
+	if m.sess != nil {
+		_ = m.session.RecordInput(m.projectID, m.sess.ID, "prompt", prompt)
+	}
+	m.pendingCmd = m.startRunFromPrompt(prompt)
+	return ""
+}
+
+// cmdResumeRun handles /resume. It mirrors `axiom resume` at
+// internal/cli/run.go and does NOT implement cross-session resume — that
+// is `axiom session resume <id>` and lives outside the TUI scope.
+func (m *Model) cmdResumeRun() string {
+	run, err := m.engine.DB().GetLatestRunByProject(m.projectID)
+	if err != nil {
+		return "No runs found for this project. Use /new \"<prompt>\" to start one."
+	}
+	if run.Status != state.RunPaused {
+		return fmt.Sprintf("No paused run to resume. Latest run is %s (%s).",
+			run.ID[:8], run.Status)
+	}
+	if err := m.engine.ResumeRun(run.ID); err != nil {
+		return fmt.Sprintf("Failed to resume run: %v", err)
+	}
+	m.refreshAfterStateChange()
+	return fmt.Sprintf("Run %s resumed.", run.ID[:8])
+}
+
+// cmdApproveSRS handles /approve. The run must be in
+// awaiting_srs_approval — any other status is an error we surface rather
+// than silently ignore.
+func (m *Model) cmdApproveSRS() string {
+	run, err := m.engine.DB().GetActiveRun(m.projectID)
+	if err != nil {
+		return "No active run to approve."
+	}
+	if run.Status != state.RunAwaitingSRSApproval {
+		return fmt.Sprintf("Cannot approve: run is in %s (must be awaiting_srs_approval).",
+			run.Status)
+	}
+	if err := m.engine.ApproveSRS(run.ID); err != nil {
+		return fmt.Sprintf("Failed to approve SRS: %v", err)
+	}
+	m.refreshAfterStateChange()
+	return fmt.Sprintf("SRS approved. Run %s is now active.", run.ID[:8])
+}
+
+// cmdRejectSRS handles /reject "<feedback>". The feedback is required
+// and must be non-empty — otherwise the handler emits a usage error
+// instead of transitioning the run.
+func (m *Model) cmdRejectSRS(rawArg string) string {
+	feedback := strings.TrimSpace(strings.Trim(rawArg, "\""))
+	if feedback == "" {
+		return "Reject requires feedback. Usage: /reject \"Your feedback here\""
+	}
+	run, err := m.engine.DB().GetActiveRun(m.projectID)
+	if err != nil {
+		return "No active run to reject."
+	}
+	if run.Status != state.RunAwaitingSRSApproval {
+		return fmt.Sprintf("Cannot reject: run is in %s (must be awaiting_srs_approval).",
+			run.Status)
+	}
+	if err := m.engine.RejectSRS(run.ID, feedback); err != nil {
+		return fmt.Sprintf("Failed to reject SRS: %v", err)
+	}
+	m.refreshAfterStateChange()
+	return fmt.Sprintf("SRS rejected. Run %s returned to draft_srs for revision.", run.ID[:8])
+}
+
+// cmdECO lists ECOs for the active run. ECO approval/rejection is
+// explicitly deferred — identity tracking for approvedBy is out of scope
+// per Issue 08 §4.5; the CLI pointer in the last line makes the CLI path
+// discoverable without pretending the TUI already supports it.
+func (m *Model) cmdECO() string {
+	run, err := m.engine.DB().GetActiveRun(m.projectID)
+	if err != nil {
+		return "No active run. ECOs are scoped to an active or paused run."
+	}
+	entries, err := m.engine.DB().ListECOsByRun(run.ID)
+	if err != nil {
+		return fmt.Sprintf("Failed to list ECOs: %v", err)
+	}
+	if len(entries) == 0 {
+		return fmt.Sprintf("No ECOs proposed for run %s.", run.ID[:8])
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "ECOs for run %s:\n", run.ID[:8])
+	for _, e := range entries {
+		fmt.Fprintf(&b, "  %s  %s  %s\n", e.ECOCode, e.Status, e.Category)
+	}
+	b.WriteString("\nUse 'axiom eco approve <code>' or 'axiom eco reject <code>' from the CLI to decide.")
+	return b.String()
+}
+
+// cmdDiff computes `git diff <base>...<head>` for the active run and
+// returns a truncated preview. Full diff overlay rendering is deferred.
+func (m *Model) cmdDiff() string {
+	run, err := m.engine.DB().GetActiveRun(m.projectID)
+	if err != nil {
+		return "No active run. Use /new \"<prompt>\" to start one."
+	}
+	git := m.engine.Git()
+	if git == nil {
+		return "Git service is not wired in this engine build."
+	}
+	diff, err := git.DiffRange(m.engine.RootDir(), run.BaseBranch, run.WorkBranch)
+	if err != nil {
+		return fmt.Sprintf("Failed to compute diff: %v", err)
+	}
+	if diff == "" {
+		return fmt.Sprintf("No diff between %s and %s.", run.BaseBranch, run.WorkBranch)
+	}
+	const maxBytes = 4096
+	if len(diff) > maxBytes {
+		return fmt.Sprintf("--- Diff %s..%s (truncated) ---\n%s\n… (%d more bytes — use the diff overlay for the full view)",
+			run.BaseBranch, run.WorkBranch, diff[:maxBytes], len(diff)-maxBytes)
+	}
+	return fmt.Sprintf("--- Diff %s..%s ---\n%s", run.BaseBranch, run.WorkBranch, diff)
 }
 
 // --- Rendering ---

@@ -376,17 +376,52 @@ The TUI provides:
 
 ### Slash Commands
 
-Type `/` followed by a command name:
+Type `/` followed by a command name. The TUI routes write operations
+directly to the engine — you do not need to leave the terminal to
+complete an `init → run → approve → execute → merge` slice:
 
 ```bash
-/status    # Show project status
-/tasks     # Show task breakdown
-/budget    # Show budget details
-/srs       # View SRS state
-/diff      # Preview latest changes
-/help      # Show all commands
-/clear     # Clear transcript
+# Bootstrap
+/new "Build a REST API"      # Start a new run (or just type the prompt directly)
+
+# Approval (after the external orchestrator submits an SRS draft)
+/srs                         # View the SRS draft
+/approve                     # Approve the SRS (run transitions to active)
+/reject "needs section 4.2"  # Reject with feedback (run returns to draft_srs)
+
+# Execution
+/status                      # Show project status
+/tasks                       # Show task breakdown
+/diff                        # Preview `git diff <base>...<work>` (first 4 KB)
+/budget                      # Show budget details
+/pause                       # Pause the run
+/cancel                      # Cancel the run (reverts uncommitted changes)
+
+# Postrun
+/diff                        # Review final changes
+/resume                      # Resume a paused run
+/new "<prompt>"              # Start another run
+
+# Always
+/help                        # Show all commands, grouped by mode
+/clear                       # Clear transcript
 ```
+
+**Worked example (greenfield project, all from inside `axiom tui`):**
+
+1. `axiom init --name "My App"` and commit the `.axiom/` directory.
+2. `axiom tui` → type `Build a REST API with JWT auth` and press Enter.
+   The status bar shows `Run created: <id> on branch axiom/my-app`.
+3. Your external orchestrator submits an SRS draft (via the API) — the
+   TUI announces `SRS draft submitted` and transitions to approval mode.
+4. Type `/srs` to view the draft, then `/approve` to accept it.
+5. Watch task execution in the task rail; use `/pause`, `/diff`, and
+   `/status` as needed.
+6. When the run completes, use `/diff` to review the final changes on
+   the work branch, then merge (or type `/cancel` to discard).
+
+No `axiom srs approve` or `axiom run` invocation is required — the TUI
+is a full-surface control plane, not just a status viewer.
 
 ### Session Management
 

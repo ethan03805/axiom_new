@@ -134,12 +134,19 @@ func sessionExportCmd(verbose *bool) *cobra.Command {
 }
 
 // TUICmd creates the `axiom tui` command (Phase 15).
+//
+// The --prompt flag (added by the Issue 08 fix) lets operators — and the
+// composition-root integration test — submit a one-shot bootstrap-mode
+// prompt without spinning up the interactive Bubble Tea loop. It routes
+// through tui.PlainRenderer.RunOnce, which calls Engine.StartRun with
+// Source="tui" and enforces the §28.2 clean-tree contract.
 func TUICmd(verbose *bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Launch interactive TUI",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			plain, _ := cmd.Flags().GetBool("plain")
+			prompt, _ := cmd.Flags().GetString("prompt")
 
 			application := tuiAppOverride
 			if application == nil {
@@ -158,6 +165,14 @@ func TUICmd(verbose *bool) *cobra.Command {
 
 			mgr := newSessionManager(application)
 
+			if prompt != "" {
+				// One-shot non-interactive bootstrap submission. This is
+				// the path exercised by the Issue 08 composition-root
+				// integration test — it wires the TUI surface to
+				// Engine.StartRun without needing a TTY.
+				return runPromptMode(cmd, application, mgr, projID, prompt)
+			}
+
 			if plain || !isInteractive() {
 				return runPlainMode(cmd, application, mgr, projID)
 			}
@@ -167,6 +182,7 @@ func TUICmd(verbose *bool) *cobra.Command {
 	}
 
 	cmd.Flags().Bool("plain", false, "force plain-text renderer")
+	cmd.Flags().String("prompt", "", "submit a one-shot bootstrap prompt and exit")
 	return cmd
 }
 
@@ -175,6 +191,25 @@ func runPlainMode(cmd *cobra.Command, application *app.App, mgr *session.Manager
 
 	var buf bytes.Buffer
 	if err := renderer.RenderStartup(&buf); err != nil {
+		return err
+	}
+	fmt.Fprint(cmd.OutOrStdout(), buf.String())
+	return nil
+}
+
+// runPromptMode drives the TUI's bootstrap-mode write path from a
+// non-interactive context. It creates a run via Engine.StartRun (through
+// PlainRenderer.RunOnce) and writes the outcome to stdout. Used by the
+// `axiom tui --prompt "..."` invocation and the Issue 08 integration
+// test.
+func runPromptMode(cmd *cobra.Command, application *app.App, mgr *session.Manager, projID, prompt string) error {
+	renderer := tui.NewPlainRenderer(application.Engine, mgr, application.Config, projID, application.Log)
+
+	var buf bytes.Buffer
+	if err := renderer.RunOnce(&buf, prompt); err != nil {
+		// RunOnce already wrote the failure message to buf; surface it
+		// to the caller so exit code is non-zero.
+		fmt.Fprint(cmd.OutOrStdout(), buf.String())
 		return err
 	}
 	fmt.Fprint(cmd.OutOrStdout(), buf.String())

@@ -54,6 +54,7 @@ func (n *noopGitService) Commit(dir string, message string) (string, error)     
 func (n *noopGitService) ChangedFilesSince(dir, sinceRef string) ([]string, error) {
 	return nil, nil
 }
+func (n *noopGitService) DiffRange(dir, base, head string) (string, error) { return "", nil }
 
 func testApp(t *testing.T) *app.App {
 	t.Helper()

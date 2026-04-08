@@ -29,6 +29,10 @@ type GitService interface {
 	AddFiles(dir string, files []string) error
 	Commit(dir string, message string) (string, error)
 	ChangedFilesSince(dir, sinceRef string) ([]string, error)
+	// DiffRange returns `git diff <base>...<head>` (three-dot notation) —
+	// the diff of `head` against the merge base with `base`. Used by the
+	// TUI `/diff` slash command to preview changes on the work branch.
+	DiffRange(dir, base, head string) (string, error)
 }
 
 // ContainerSpec describes a container to be started.

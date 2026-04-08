@@ -295,7 +295,19 @@ Axiom — my-project
   Commands: /new  /status  /help
 ```
 
-The TUI supports slash commands (`/status`, `/tasks`, `/help`, etc.), shell mode (`!` prefix), and input history (up/down arrows). See [Session & TUI Reference](session-tui.md) for full details.
+**One-shot prompt submission:** `axiom tui --prompt "<prompt>"` starts a
+run from a non-interactive context (e.g. CI scripts, composition-root
+tests) and writes the result to stdout. The clean-tree contract still
+applies — the command exits non-zero on a dirty working tree with no
+`--allow-dirty` bypass.
+
+The TUI supports slash commands for the full operator surface:
+`/status`, `/tasks`, `/budget`, `/srs`, `/approve`, `/reject "<fb>"`,
+`/eco`, `/diff`, `/new`, `/resume`, `/pause`, `/cancel`, `/clear`,
+`/help`. Regular text in bootstrap mode calls `Engine.StartRun`
+directly. Shell mode (`!` prefix) is reserved; command execution is not
+yet routed. See [Session & TUI Reference](session-tui.md) for full
+details.
 
 ### `axiom session list`
 

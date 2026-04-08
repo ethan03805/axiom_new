@@ -256,17 +256,19 @@ func (m *Manager) buildActionCard(mode state.SessionMode, status *engine.RunStat
 }
 
 // buildCommandRow returns the suggested commands for the current mode.
+// Per Issue 08 §4.8, approval mode now suggests the full decision surface
+// (/srs, /approve, /reject) rather than just /srs.
 func (m *Manager) buildCommandRow(mode state.SessionMode) []string {
 	base := []string{"/status", "/help"}
 	switch mode {
 	case state.SessionBootstrap:
 		return append([]string{"/new"}, base...)
 	case state.SessionApproval:
-		return append([]string{"/srs"}, base...)
+		return append([]string{"/srs", "/approve", "/reject"}, base...)
 	case state.SessionExecution:
-		return append([]string{"/tasks", "/diff", "/budget"}, base...)
+		return append([]string{"/tasks", "/diff", "/budget", "/pause", "/cancel"}, base...)
 	case state.SessionPostrun:
-		return append([]string{"/diff", "/resume"}, base...)
+		return append([]string{"/diff", "/resume", "/new"}, base...)
 	default:
 		return base
 	}
@@ -422,8 +424,9 @@ func (m *Manager) PromptSuggestions(projectID string) []string {
 	switch mode {
 	case state.SessionApproval:
 		return []string{
-			"Review and approve the SRS",
-			"Reject SRS with feedback",
+			"/srs — View the SRS draft",
+			"/approve — Approve the SRS",
+			"/reject \"<feedback>\" — Reject with feedback",
 		}
 	case state.SessionExecution:
 		return []string{

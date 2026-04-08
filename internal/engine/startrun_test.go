@@ -42,6 +42,9 @@ func (g *dirtyGitService) Commit(string, string) (string, error)     { return "s
 func (g *dirtyGitService) ChangedFilesSince(string, string) ([]string, error) {
 	return nil, nil
 }
+func (g *dirtyGitService) DiffRange(string, string, string) (string, error) {
+	return "", nil
+}
 
 func TestStartRun_PersistsPromptAndMetadata(t *testing.T) {
 	e := newTestEngine(t)

@@ -44,6 +44,9 @@ func (g *cancelTrackingGitService) Commit(string, string) (string, error) {
 func (g *cancelTrackingGitService) ChangedFilesSince(string, string) ([]string, error) {
 	return nil, nil
 }
+func (g *cancelTrackingGitService) DiffRange(string, string, string) (string, error) {
+	return "", nil
+}
 
 type trackingContainerService struct {
 	stopped []string

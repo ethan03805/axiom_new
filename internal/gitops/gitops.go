@@ -240,6 +240,15 @@ func (m *Manager) DiffWorkBranch(dir, baseBranch, workBranch string) (string, er
 	return out, nil
 }
 
+// DiffRange satisfies engine.GitService.DiffRange. It returns the diff of
+// `head` against the merge base with `base` (three-dot notation), and is
+// the entrypoint used by the TUI `/diff` slash command. If either ref is
+// missing locally, the underlying git command returns a descriptive error
+// that the caller surfaces in the transcript rather than swallowing.
+func (m *Manager) DiffRange(dir, base, head string) (string, error) {
+	return m.DiffWorkBranch(dir, base, head)
+}
+
 // SetupWorkBranch prepares the git workspace for a run. If the work branch
 // already exists (resume case), it checks it out. If it doesn't exist (new run),
 // it creates the branch from the current HEAD.

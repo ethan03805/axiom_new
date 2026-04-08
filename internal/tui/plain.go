@@ -245,3 +245,42 @@ func (r *PlainRenderer) RunStatus(w io.Writer) error {
 		status.Budget.SpentUSD, status.Budget.MaxUSD)
 	return nil
 }
+
+// RunOnce executes a single prompt in the plain renderer's
+// non-interactive "one prompt in, one result out" mode and writes a
+// result line to w.
+//
+// This is the scripted-stdin entrypoint for the Issue 08 integration
+// test. It calls Engine.StartRun directly (bypassing the full Bubble Tea
+// model) so CI environments without a TTY can still exercise the TUI's
+// new write path. The method deliberately mirrors Model.submitInput's
+// bootstrap-mode behavior to keep the two surfaces observable as
+// equivalent: clean-tree check, StartRun with Source="tui", success /
+// failure line written to w.
+func (r *PlainRenderer) RunOnce(w io.Writer, prompt string) error {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return fmt.Errorf("empty prompt")
+	}
+
+	mode := r.session.DetermineMode(r.projID)
+	if mode != "bootstrap" {
+		fmt.Fprintf(w, "Cannot start a new run from plain mode: current session mode is %s.\n", mode)
+		return fmt.Errorf("plain-mode run submission requires bootstrap mode (was %s)", mode)
+	}
+
+	run, err := r.engine.StartRun(engine.StartRunOptions{
+		ProjectID:  r.projID,
+		Prompt:     prompt,
+		BaseBranch: "main",
+		Source:     "tui",
+	})
+	if err != nil {
+		fmt.Fprintf(w, "Failed to start run: %v\n", err)
+		return err
+	}
+
+	fmt.Fprintf(w, "Run created: %s on branch %s. Waiting for external orchestrator to submit SRS draft.\n",
+		run.ID[:8], run.WorkBranch)
+	return nil
+}

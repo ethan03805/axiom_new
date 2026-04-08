@@ -203,6 +203,11 @@ func (e *Engine) TestGen() *testgen.Service { return e.testGen }
 // inference control plane is present in the running engine.
 func (e *Engine) Inference() InferenceService { return e.inference }
 
+// Git returns the engine's git service. Exposed so the TUI `/diff` slash
+// command can compute `git diff <base>...<head>` without re-plumbing a
+// separate git dependency into the session layer.
+func (e *Engine) Git() GitService { return e.git }
+
 // emitEvent publishes an event to the bus. If persistence fails,
 // the error is logged but does not block the calling operation.
 // Per Architecture Section 22.4, events form the audit trail.
