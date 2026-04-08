@@ -1,12 +1,47 @@
 package engine
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/openaxiom/axiom/internal/state"
 )
+
+// dirtyGitService returns a ValidateClean error to simulate a dirty working
+// tree. Used by the AllowDirty bypass tests.
+type dirtyGitService struct {
+	validateCleanCalls   int
+	setupWorkBranchCalls int
+	cancelCleanupCalls   int
+}
+
+func (g *dirtyGitService) CurrentBranch(string) (string, error) { return "main", nil }
+func (g *dirtyGitService) CreateBranch(string, string) error    { return nil }
+func (g *dirtyGitService) CurrentHEAD(string) (string, error)   { return "sha", nil }
+func (g *dirtyGitService) IsDirty(string) (bool, error)         { return true, nil }
+func (g *dirtyGitService) ValidateClean(string) error {
+	g.validateCleanCalls++
+	return errors.New("working tree has uncommitted changes; commit or stash before running axiom")
+}
+func (g *dirtyGitService) SetupWorkBranch(string, string, string) error {
+	g.setupWorkBranchCalls++
+	return nil
+}
+func (g *dirtyGitService) SetupWorkBranchAllowDirty(string, string, string) error {
+	g.setupWorkBranchCalls++
+	return nil
+}
+func (g *dirtyGitService) CancelCleanup(string, string) error {
+	g.cancelCleanupCalls++
+	return nil
+}
+func (g *dirtyGitService) AddFiles(string, []string) error           { return nil }
+func (g *dirtyGitService) Commit(string, string) (string, error)     { return "sha", nil }
+func (g *dirtyGitService) ChangedFilesSince(string, string) ([]string, error) {
+	return nil, nil
+}
 
 func TestStartRun_PersistsPromptAndMetadata(t *testing.T) {
 	e := newTestEngine(t)
@@ -305,9 +340,67 @@ func TestRestartRecovery_PromptPersisted(t *testing.T) {
 	}
 }
 
+// TestStartRun_AllowDirtyBypassesValidateClean verifies that setting
+// StartRunOptions.AllowDirty skips the clean-tree check entirely. This is
+// the recovery-mode escape hatch — Architecture §28.2 requires a clean
+// tree by default, but crash-recovery scenarios need an opt-in bypass.
+func TestStartRun_AllowDirtyBypassesValidateClean(t *testing.T) {
+	gitSvc := &dirtyGitService{}
+	e := newTestEngineWithGit(t, gitSvc)
+
+	projectID := seedProject(t, e, "allow-dirty")
+
+	run, err := e.StartRun(StartRunOptions{
+		ProjectID:  projectID,
+		Prompt:     "recovery scenario",
+		Source:     "cli",
+		AllowDirty: true,
+	})
+	if err != nil {
+		t.Fatalf("StartRun with AllowDirty: %v", err)
+	}
+	if run == nil {
+		t.Fatal("expected run record, got nil")
+	}
+	if gitSvc.validateCleanCalls != 0 {
+		t.Errorf("ValidateClean calls = %d, want 0 when AllowDirty is set", gitSvc.validateCleanCalls)
+	}
+	if gitSvc.setupWorkBranchCalls != 1 {
+		t.Errorf("SetupWorkBranch calls = %d, want 1 (work branch still created)", gitSvc.setupWorkBranchCalls)
+	}
+}
+
+// TestStartRun_RefusesDirtyTreeByDefault verifies that without AllowDirty,
+// a dirty working tree blocks the run.
+func TestStartRun_RefusesDirtyTreeByDefault(t *testing.T) {
+	gitSvc := &dirtyGitService{}
+	e := newTestEngineWithGit(t, gitSvc)
+
+	projectID := seedProject(t, e, "refuse-dirty")
+
+	_, err := e.StartRun(StartRunOptions{
+		ProjectID: projectID,
+		Prompt:    "normal run",
+		Source:    "cli",
+	})
+	if err == nil {
+		t.Fatal("expected error when working tree is dirty and AllowDirty is unset")
+	}
+	if gitSvc.validateCleanCalls != 1 {
+		t.Errorf("ValidateClean calls = %d, want 1 in default mode", gitSvc.validateCleanCalls)
+	}
+	if gitSvc.setupWorkBranchCalls != 0 {
+		t.Errorf("SetupWorkBranch calls = %d, want 0 when ValidateClean fails", gitSvc.setupWorkBranchCalls)
+	}
+}
+
 // --- helpers ---
 
 func newTestEngine(t *testing.T) *Engine {
+	return newTestEngineWithGit(t, &noopGitService{})
+}
+
+func newTestEngineWithGit(t *testing.T, git GitService) *Engine {
 	t.Helper()
 	db := testDB(t)
 	cfg := testConfig()
@@ -323,7 +416,7 @@ func newTestEngine(t *testing.T) *Engine {
 		DB:      db,
 		RootDir: dir,
 		Log:     testLogger(),
-		Git:     &noopGitService{},
+		Git:     git,
 	})
 	if err != nil {
 		t.Fatal(err)

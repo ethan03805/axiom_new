@@ -142,7 +142,9 @@ func (g *trackingGitService) CurrentHEAD(string) (string, error) {
 }
 func (g *trackingGitService) IsDirty(string) (bool, error)                 { return false, nil }
 func (g *trackingGitService) ValidateClean(string) error                   { return nil }
-func (g *trackingGitService) SetupWorkBranch(string, string, string) error { return nil }
+func (g *trackingGitService) SetupWorkBranch(string, string, string) error           { return nil }
+func (g *trackingGitService) SetupWorkBranchAllowDirty(string, string, string) error { return nil }
+func (g *trackingGitService) CancelCleanup(string, string) error                     { return nil }
 func (g *trackingGitService) AddFiles(_ string, files []string) error {
 	g.added = append(g.added, append([]string(nil), files...))
 	return nil

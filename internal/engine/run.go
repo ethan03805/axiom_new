@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/events"
@@ -21,6 +23,12 @@ type StartRunOptions struct {
 	BaseBranch string
 	BudgetUSD  float64
 	Source     string // cli, tui, api, control-ws
+	// AllowDirty bypasses the working-tree-clean check. Set only for
+	// recovery scenarios where the user explicitly opts into resuming work
+	// on a branch with uncommitted state. Architecture §28.2 requires a
+	// clean tree by default; this flag is the documented escape hatch and
+	// must trigger a loud WARN log when used.
+	AllowDirty bool
 }
 
 // RunOptions configures a new project run (low-level helper).
@@ -44,9 +52,19 @@ func (e *Engine) StartRun(opts StartRunOptions) (*state.ProjectRun, error) {
 		source = "cli"
 	}
 
-	// Validate workspace: working tree must be clean
-	if err := e.git.ValidateClean(e.rootDir); err != nil {
-		return nil, fmt.Errorf("workspace not ready: %w", err)
+	// Validate workspace: working tree must be clean. AllowDirty is the
+	// explicit recovery-mode escape hatch (Architecture §28.2 — dirty tree
+	// is refused by default; this flag bypasses the check with a loud WARN
+	// log so recovery scenarios can resume work on branches that
+	// legitimately carry uncommitted state).
+	if opts.AllowDirty {
+		e.log.Warn("workspace clean check bypassed via AllowDirty",
+			"source", source,
+			"hint", "commit or stash before next run to avoid mixing state")
+	} else {
+		if err := e.git.ValidateClean(e.rootDir); err != nil {
+			return nil, fmt.Errorf("workspace not ready: %w", err)
+		}
 	}
 
 	// Create the run record via the low-level helper
@@ -67,9 +85,18 @@ func (e *Engine) StartRun(opts StartRunOptions) (*state.ProjectRun, error) {
 		return nil, fmt.Errorf("persisting handoff metadata: %w", err)
 	}
 
-	// Set up work branch
-	if err := e.git.SetupWorkBranch(e.rootDir, run.BaseBranch, run.WorkBranch); err != nil {
-		return nil, fmt.Errorf("setting up work branch: %w", err)
+	// Set up work branch. In AllowDirty mode the dirty tree was intentionally
+	// preserved, so we route through the recovery variant that skips the
+	// internal clean-tree check — otherwise SetupWorkBranch's defensive
+	// ValidateClean would undo the user's explicit opt-in.
+	if opts.AllowDirty {
+		if err := e.git.SetupWorkBranchAllowDirty(e.rootDir, run.BaseBranch, run.WorkBranch); err != nil {
+			return nil, fmt.Errorf("setting up work branch: %w", err)
+		}
+	} else {
+		if err := e.git.SetupWorkBranch(e.rootDir, run.BaseBranch, run.WorkBranch); err != nil {
+			return nil, fmt.Errorf("setting up work branch: %w", err)
+		}
 	}
 
 	e.emitEvent(events.EngineEvent{
@@ -181,10 +208,62 @@ func (e *Engine) ResumeRun(runID string) error {
 	return nil
 }
 
-// CancelRun transitions a run to cancelled.
+// CancelRun transitions a run to cancelled and executes the architectural
+// cancel protocol:
+//
+//  1. Flip the DB status (atomic barrier against scheduler dispatch — the
+//     scheduler's findReadyTasks filters by run status).
+//  2. Stop any containers still running for the run.
+//  3. Revert uncommitted git changes and switch back to the base branch
+//     (Architecture §23.4 — committed work on the work branch is preserved).
+//  4. Emit the RunCancelled event.
+//
+// Container and git cleanup failures are logged but do not block the cancel.
+// Per Architecture §22, the user's intent to cancel is absolute: leaked
+// containers are recoverable via the next session's startup recovery pass,
+// and a failed git cleanup leaves a clear log message with a manual-recovery
+// command.
 func (e *Engine) CancelRun(runID string) error {
+	// Load the run record first so we have the BaseBranch for the git
+	// cleanup call and so we enforce "run must exist" before we touch state.
+	run, err := e.db.GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("loading run %s: %w", runID, err)
+	}
+
+	// Step 1: atomic DB barrier. The scheduler's findReadyTasks filters by
+	// run status, so flipping this first prevents any new task dispatch.
 	if err := e.db.UpdateRunStatus(runID, state.RunCancelled); err != nil {
 		return fmt.Errorf("cancelling run: %w", err)
+	}
+
+	// Step 2: best-effort container shutdown.
+	if e.container != nil {
+		active, listErr := e.db.ListActiveContainers(runID)
+		if listErr != nil {
+			e.log.Warn("listing active containers during cancel",
+				"run_id", runID, "error", listErr)
+		} else if len(active) > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			for _, cs := range active {
+				if stopErr := e.container.Stop(ctx, cs.ID); stopErr != nil {
+					e.log.Warn("stopping container during cancel",
+						"run_id", runID, "container_id", cs.ID, "error", stopErr)
+				}
+			}
+			cancel()
+		}
+	}
+
+	// Step 3: best-effort git cleanup.
+	if e.git != nil {
+		if cleanupErr := e.git.CancelCleanup(e.rootDir, run.BaseBranch); cleanupErr != nil {
+			e.log.Warn("git cancel cleanup failed; manual recovery may be required",
+				"run_id", runID,
+				"base_branch", run.BaseBranch,
+				"error", cleanupErr,
+				"hint", "run 'git reset --hard && git checkout "+run.BaseBranch+"' to recover")
+		}
 	}
 
 	e.emitEvent(events.EngineEvent{
@@ -192,7 +271,10 @@ func (e *Engine) CancelRun(runID string) error {
 		RunID: runID,
 	})
 
-	e.log.Info("run cancelled", "run_id", runID)
+	e.log.Info("run cancelled",
+		"run_id", runID,
+		"base_branch", run.BaseBranch,
+	)
 	return nil
 }
 

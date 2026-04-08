@@ -12,12 +12,16 @@ import (
 // RunCmd creates the `axiom run "<prompt>"` command.
 func RunCmd(verbose *bool) *cobra.Command {
 	var budgetUSD float64
+	var allowDirty bool
 
 	cmd := &cobra.Command{
 		Use:   "run <prompt>",
 		Short: "Start a new project run",
-		Long:  "Start a new project: generate SRS, await approval, execute.",
-		Args:  cobra.ExactArgs(1),
+		Long: "Start a new project: generate SRS, await approval, execute.\n\n" +
+			"By default axiom refuses to start on a dirty working tree (Architecture §28.2).\n" +
+			"Pass --allow-dirty to bypass this check for crash-recovery scenarios where\n" +
+			"resuming work on a branch with uncommitted state is intentional.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
 			if err != nil {
@@ -30,22 +34,24 @@ func RunCmd(verbose *bool) *cobra.Command {
 				return err
 			}
 
-			return runAction(application, projectID, args[0], budgetUSD, cmd.OutOrStdout())
+			return runAction(application, projectID, args[0], budgetUSD, allowDirty, cmd.OutOrStdout())
 		},
 	}
 
 	cmd.Flags().Float64Var(&budgetUSD, "budget", 0, "budget in USD (defaults to config value)")
+	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "bypass the clean-working-tree check (recovery only)")
 	return cmd
 }
 
 // runAction starts a new project run via the engine's high-level StartRun entrypoint.
-func runAction(application *app.App, projectID, prompt string, budgetUSD float64, w io.Writer) error {
+func runAction(application *app.App, projectID, prompt string, budgetUSD float64, allowDirty bool, w io.Writer) error {
 	run, err := application.Engine.StartRun(engine.StartRunOptions{
 		ProjectID:  projectID,
 		Prompt:     prompt,
 		BaseBranch: "main",
 		BudgetUSD:  budgetUSD,
 		Source:     "cli",
+		AllowDirty: allowDirty,
 	})
 	if err != nil {
 		return fmt.Errorf("starting run: %w", err)

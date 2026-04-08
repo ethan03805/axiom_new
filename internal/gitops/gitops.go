@@ -3,6 +3,16 @@
 // which ensures branch naming, commit formatting, snapshot tracking, and
 // workspace safety conform to the architecture (Sections 16, 23).
 //
+// Wiring: the engine's high-level Engine.StartRun calls ValidateClean and
+// SetupWorkBranch to enforce the architecture's clean-tree contract and
+// switch onto axiom/<slug> before the external orchestrator takes over.
+// Engine.CancelRun calls CancelCleanup to revert uncommitted state and
+// return to the base branch; committed work on the work branch is
+// preserved per Architecture §23.4. The recovery-mode escape hatch
+// exposed by `axiom run --allow-dirty` routes through the
+// SetupWorkBranchAllowDirty variant which carries uncommitted state over
+// onto the work branch.
+//
 // Design constraint (Section 23.4): This package SHALL NOT push, pull, fetch,
 // or merge to/from remote repositories. Axiom never modifies remotes automatically.
 package gitops
@@ -238,7 +248,24 @@ func (m *Manager) SetupWorkBranch(dir, baseBranch, workBranch string) error {
 	if err := m.ValidateClean(dir); err != nil {
 		return fmt.Errorf("cannot setup work branch: %w", err)
 	}
+	return m.setupWorkBranchBody(dir, baseBranch, workBranch)
+}
 
+// SetupWorkBranchAllowDirty is the recovery-mode variant of SetupWorkBranch.
+// It skips the clean-tree precondition, carrying any uncommitted changes
+// over onto the work branch. Used exclusively by the engine's StartRun when
+// StartRunOptions.AllowDirty is set (Architecture §28.2 escape hatch).
+//
+// The caller is responsible for logging the bypass — this method performs
+// no safety warnings of its own.
+func (m *Manager) SetupWorkBranchAllowDirty(dir, baseBranch, workBranch string) error {
+	return m.setupWorkBranchBody(dir, baseBranch, workBranch)
+}
+
+// setupWorkBranchBody holds the branch-resolution logic shared by both
+// SetupWorkBranch and SetupWorkBranchAllowDirty. It assumes any cleanliness
+// check has already been performed (or intentionally bypassed) by the caller.
+func (m *Manager) setupWorkBranchBody(dir, baseBranch, workBranch string) error {
 	exists, err := m.BranchExists(dir, workBranch)
 	if err != nil {
 		return err

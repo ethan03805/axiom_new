@@ -412,7 +412,7 @@ Phase 20 has started the stabilization and release hardening pass:
 - **Execution pipeline wiring** (`internal/engine/executor.go`, `internal/engine/taskspec.go`, `internal/engine/ipcmonitor.go`) - Added the missing runtime glue between scheduler dispatch and merge processing: TaskSpec generation, Meeseeks IPC monitoring, manifest / validation / review progression, merge enqueueing, and attempt phase tracking through the live engine.
 
 - **Known remaining gaps**
-  - `engine.CreateRun` persists `work_branch` metadata but does not yet call the git package's `SetupWorkBranch`, so branch checkout and dirty-tree enforcement are not active in the live `axiom run` path.
+  - ~~`engine.CreateRun` persists `work_branch` metadata but does not yet call the git package's `SetupWorkBranch`, so branch checkout and dirty-tree enforcement are not active in the live `axiom run` path.~~ **Resolved by Issues 01 and 06:** `Engine.StartRun` (Issue 01 fix) now calls `ValidateClean` and `SetupWorkBranch` on the `axiom run` path, and `Engine.CancelRun` (Issue 06 fix) now calls `CancelCleanup` to revert uncommitted state on cancel. `axiom run --allow-dirty` routes through `SetupWorkBranchAllowDirty` as a documented recovery escape hatch. See the Cancel Lifecycle section of [Git Operations Reference](git-operations.md).
   - Axiom currently relies on a user-appointed external orchestrator for initial SRS generation. No embedded orchestrator is wired into live app flows, and the run prompt / `submit_srs` handoff is still incomplete.
   - ~~The test-generation service is implemented, but automatic `CreateTestTask` / `MarkConverged` hooks are still explicit/orchestrator-driven rather than engine-wired.~~ **Resolved by Issue 05 fix:** `mergeQueueTaskAdapter.CompleteTask` / `RequeueTask` and `Engine.failAttempt` now fire `CreateTestTask`, `MarkConverged`, `HandleTestFailure`, and `MarkBlocked` automatically. `Engine.CompleteRun` also refuses to complete a run while any convergence pair is non-converged.
 
@@ -876,7 +876,7 @@ Phase 4 implemented deterministic, architecture-compliant git operations in the 
 
 - **Diff helpers** — `Diff` (between two refs), `DiffStaged` (staged changes), `DiffWorkBranch` (three-dot diff for work branch review). These support task output review, merge previews, and final branch review (Architecture Section 23.4).
 
-- **Cancel cleanup** — `CancelCleanup` reverts all uncommitted engine-applied changes (`git reset --hard HEAD` + `git clean -fd`) and switches back to the base branch. Committed work on the work branch is preserved for user review.
+- **Cancel cleanup** — `CancelCleanup` reverts all uncommitted engine-applied changes (`git reset --hard HEAD` + `git clean -fd`) and switches back to the base branch. Committed work on the work branch is preserved for user review. Wired into `Engine.CancelRun` as of the Issue 06 fix, so `axiom cancel` performs this cleanup as part of the architectural cancel protocol (see the Cancel Lifecycle section of [Git Operations Reference](git-operations.md)).
 
 - **No remote operations** — The Manager has zero push, pull, fetch, or remote-related methods, enforcing Architecture Section 23.4: "Axiom SHALL NOT automatically merge or push to remote repositories."
 
@@ -898,7 +898,9 @@ Phase 3 built the trusted control plane that all command surfaces use:
 
 - **Run lifecycle** (`internal/engine/run.go`) — Six methods enforcing the run state machine:
   - `CreateRun` — creates a run in `draft_srs` status with config snapshot, work branch derivation, and default budget from config
-  - `PauseRun`, `ResumeRun`, `CancelRun`, `CompleteRun`, `FailRun` — each validates the state transition (delegating to `state.UpdateRunStatus`) and emits the corresponding event
+  - `PauseRun`, `ResumeRun`, `CompleteRun`, `FailRun` — each validates the state transition (delegating to `state.UpdateRunStatus`) and emits the corresponding event
+  - `CancelRun` — executes the architectural cancel protocol introduced by the Issue 06 fix: loads the run, flips the DB status (atomic barrier against scheduler dispatch), stops any containers still running for the run, calls `git.CancelCleanup` to revert uncommitted changes and return to the base branch, and emits `RunCancelled`. Container and git cleanup are fail-open — the user's intent is absolute per Architecture §22. Works from all non-terminal states including `draft_srs` and `awaiting_srs_approval`.
+  - `StartRun` — high-level entrypoint used by `axiom run` that validates the workspace (or logs a loud `WARN` when `StartRunOptions.AllowDirty` is set) and sets up the work branch before persisting prompt/handoff metadata.
 
 - **Status projections** (`internal/engine/status.go`) — `GetRunStatus(projectID)` returns a `RunStatusProjection` containing:
   - Project identity (name, slug, root dir)

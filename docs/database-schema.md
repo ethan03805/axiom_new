@@ -542,11 +542,13 @@ Status update methods use `WithTx` (transactional read-then-write) to enforce va
 
 **Run transitions:**
 ```
-draft_srs → awaiting_srs_approval
-awaiting_srs_approval → active | draft_srs
+draft_srs → awaiting_srs_approval | cancelled
+awaiting_srs_approval → active | draft_srs | cancelled
 active → paused | cancelled | completed | error
 paused → active | cancelled
 ```
+
+Pre-active cancellation (`draft_srs` or `awaiting_srs_approval` → `cancelled`) exists so a user can abandon a run while waiting for the external orchestrator to submit an SRS draft. Pre-active runs have no containers and no commits, so the engine's cancel protocol degenerates to a DB-only transition with no-op container/git cleanup.
 
 **Task transitions:**
 ```

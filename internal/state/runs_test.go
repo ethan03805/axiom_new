@@ -122,6 +122,8 @@ func TestUpdateRunStatus_ValidTransitions(t *testing.T) {
 		{RunActive, RunPaused},
 		{RunPaused, RunActive},
 		{RunActive, RunCompleted},
+		{RunDraftSRS, RunCancelled},
+		{RunAwaitingSRSApproval, RunCancelled},
 	}
 
 	for i, tr := range transitions {
@@ -206,6 +208,76 @@ func TestUpdateRunStatus_SetsTimestamps(t *testing.T) {
 	got, _ = db.GetRun("run-ts")
 	if got.CancelledAt == nil {
 		t.Error("CancelledAt should be set after cancellation")
+	}
+}
+
+// TestUpdateRunStatus_CancelFromDraftSRS verifies that a run sitting in
+// draft_srs (waiting for the external orchestrator to submit an SRS draft)
+// can be cancelled directly. See Issue 06 — expanding the state machine so
+// users can abandon a run before the orchestrator responds.
+func TestUpdateRunStatus_CancelFromDraftSRS(t *testing.T) {
+	db := testDB(t)
+	projID := seedProject(t, db)
+
+	r := &ProjectRun{
+		ID: "run-cancel-draft", ProjectID: projID, Status: RunDraftSRS,
+		BaseBranch: "main", WorkBranch: "axiom/cancel-draft",
+		OrchestratorMode: "external", OrchestratorRuntime: "codex",
+		SRSApprovalDelegate: "user", BudgetMaxUSD: 10.0, ConfigSnapshot: "{}",
+	}
+	if err := db.CreateRun(r); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.UpdateRunStatus(r.ID, RunCancelled); err != nil {
+		t.Fatalf("cancelling draft_srs run: %v", err)
+	}
+
+	got, err := db.GetRun(r.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != RunCancelled {
+		t.Errorf("status = %q, want cancelled", got.Status)
+	}
+	if got.CancelledAt == nil {
+		t.Error("cancelled_at should be set after cancel from draft_srs")
+	}
+}
+
+// TestUpdateRunStatus_CancelFromAwaitingSRSApproval verifies that a run in
+// awaiting_srs_approval (the orchestrator has submitted, user hasn't approved
+// yet) can be cancelled directly.
+func TestUpdateRunStatus_CancelFromAwaitingSRSApproval(t *testing.T) {
+	db := testDB(t)
+	projID := seedProject(t, db)
+
+	r := &ProjectRun{
+		ID: "run-cancel-awaiting", ProjectID: projID, Status: RunDraftSRS,
+		BaseBranch: "main", WorkBranch: "axiom/cancel-awaiting",
+		OrchestratorMode: "external", OrchestratorRuntime: "codex",
+		SRSApprovalDelegate: "user", BudgetMaxUSD: 10.0, ConfigSnapshot: "{}",
+	}
+	if err := db.CreateRun(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateRunStatus(r.ID, RunAwaitingSRSApproval); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.UpdateRunStatus(r.ID, RunCancelled); err != nil {
+		t.Fatalf("cancelling awaiting_srs_approval run: %v", err)
+	}
+
+	got, err := db.GetRun(r.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != RunCancelled {
+		t.Errorf("status = %q, want cancelled", got.Status)
+	}
+	if got.CancelledAt == nil {
+		t.Error("cancelled_at should be set after cancel from awaiting_srs_approval")
 	}
 }
 

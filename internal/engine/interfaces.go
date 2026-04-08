@@ -17,6 +17,15 @@ type GitService interface {
 	IsDirty(dir string) (bool, error)
 	ValidateClean(dir string) error
 	SetupWorkBranch(dir, baseBranch, workBranch string) error
+	// SetupWorkBranchAllowDirty is the recovery-mode variant that skips the
+	// internal clean-tree check, carrying uncommitted changes over onto the
+	// work branch. Only called by Engine.StartRun when AllowDirty is set.
+	SetupWorkBranchAllowDirty(dir, baseBranch, workBranch string) error
+	// CancelCleanup reverts uncommitted changes and switches back to the base
+	// branch. Called by Engine.CancelRun to satisfy Architecture §23.4 —
+	// committed work on the work branch is preserved; only uncommitted state
+	// is discarded.
+	CancelCleanup(dir, baseBranch string) error
 	AddFiles(dir string, files []string) error
 	Commit(dir string, message string) (string, error)
 	ChangedFilesSince(dir, sinceRef string) ([]string, error)

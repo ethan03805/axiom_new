@@ -8,7 +8,7 @@ Axiom's git operations are handled by the `internal/gitops` package. All git int
 - **No remote operations** — The Manager has no push, pull, fetch, or remote-related methods. Axiom never modifies remotes automatically (Architecture Section 23.4).
 - **Deterministic branching** — Work branches are created at the exact HEAD of the base branch with a predictable name.
 
-Current runtime note: the git package already supports deterministic branch setup and dirty-tree validation, but `engine.CreateRun` currently records the intended work branch in state without yet invoking `SetupWorkBranch`.
+Runtime wiring: `Engine.StartRun` calls `ValidateClean` and `SetupWorkBranch` before the external orchestrator takes over, so every `axiom run` switches the repo onto `axiom/<slug>` and refuses to start on a dirty tree. `Engine.CancelRun` calls `CancelCleanup` to revert uncommitted state and return to the base branch. The recovery-mode escape hatch (`axiom run --allow-dirty`) routes through `SetupWorkBranchAllowDirty` to preserve uncommitted state onto the work branch.
 
 ## Manager
 
@@ -36,6 +36,7 @@ All work branches follow the pattern `axiom/<project-slug>` (Architecture Sectio
 | `CheckoutBranch(dir, name) error` | Switches to an existing branch |
 | `BranchExists(dir, name) (bool, error)` | Reports whether a local branch exists |
 | `SetupWorkBranch(dir, baseBranch, workBranch) error` | Creates or resumes a work branch (see below) |
+| `SetupWorkBranchAllowDirty(dir, baseBranch, workBranch) error` | Recovery-mode variant that skips the clean-tree precondition and carries uncommitted state onto the work branch |
 
 ### SetupWorkBranch
 
@@ -52,9 +53,9 @@ err := mgr.SetupWorkBranch(dir, "main", "axiom/my-project")
 err := mgr.SetupWorkBranch(dir, "main", "axiom/my-project")
 ```
 
-Fails with an error if the working tree has uncommitted changes.
+Fails with an error if the working tree has uncommitted changes, unless the caller routes through `SetupWorkBranchAllowDirty` (used by `axiom run --allow-dirty`).
 
-Current engine note: this is the intended high-level entry point for run startup, but the live `axiom run` path does not yet call it automatically.
+This is the high-level entry point for run startup and is called by `Engine.StartRun` from the live `axiom run` path.
 
 ## Snapshots
 
@@ -77,7 +78,7 @@ sha, err := mgr.Snapshot(dir)
 | `IsDirty(dir) (bool, error)` | Reports whether the working tree has uncommitted changes (staged, unstaged, or untracked) |
 | `ValidateClean(dir) error` | Returns an actionable error if the working tree is dirty |
 
-`ValidateClean` is called by `SetupWorkBranch` automatically. The manager therefore supports the architecture's dirty-tree requirement, but the current `axiom run` command does not yet invoke this path.
+`ValidateClean` is called by `SetupWorkBranch` automatically, and `Engine.StartRun` calls it again upfront so the error message surfaces at the CLI layer before any state is written. `axiom run` therefore refuses to start on a dirty tree by default; pass `--allow-dirty` to bypass the check for recovery scenarios.
 
 ## Commit Operations
 
@@ -171,6 +172,20 @@ err := mgr.CancelCleanup(dir, "main")
 // "axiom/my-project" branch still exists with any committed work
 ```
 
+### Cancel Lifecycle
+
+`Engine.CancelRun` executes the architectural cancel protocol in a fixed order:
+
+1. **Load run** — `db.GetRun(runID)` captures the base branch and enforces existence.
+2. **DB barrier** — `db.UpdateRunStatus(runID, RunCancelled)` flips the status atomically. The scheduler's `findReadyTasks` filters on run status, so this single write prevents any new task dispatch for the cancelled run.
+3. **Container stop** — `db.ListActiveContainers(runID)` returns every running container session for the run; the engine calls `container.Stop` for each under a 30-second context deadline. Failures are logged but do not block the cancel.
+4. **Git cleanup** — `git.CancelCleanup(rootDir, baseBranch)` reverts uncommitted changes and switches back to the base branch. Failures are logged with an explicit `git reset --hard && git checkout <base>` recovery hint but do not block the cancel.
+5. **Event** — `RunCancelled` is emitted on the engine bus.
+
+Container and git cleanup are **fail-open**: the user's intent to cancel is absolute. Per Architecture §22, leaked containers are recoverable via the next session's startup recovery pass, and a failed git cleanup leaves the repo in a state the user can recover manually using the logged hint.
+
+Pre-active cancellation is supported: runs sitting in `draft_srs` or `awaiting_srs_approval` (waiting for the external orchestrator) can be cancelled directly. The protocol is unchanged — for pre-active runs the container and git cleanup steps are simply no-ops since no containers or uncommitted changes exist.
+
 ## Integration with Engine
 
 The `gitops.Manager` satisfies the `engine.GitService` interface:
@@ -181,6 +196,10 @@ type GitService interface {
     CreateBranch(dir, name string) error
     CurrentHEAD(dir string) (string, error)
     IsDirty(dir string) (bool, error)
+    ValidateClean(dir string) error
+    SetupWorkBranch(dir, baseBranch, workBranch string) error
+    SetupWorkBranchAllowDirty(dir, baseBranch, workBranch string) error
+    CancelCleanup(dir, baseBranch string) error
     AddFiles(dir string, files []string) error
     Commit(dir string, message string) (string, error)
     ChangedFilesSince(dir, sinceRef string) ([]string, error)
@@ -199,7 +218,7 @@ eng, err := engine.New(engine.Options{
 })
 ```
 
-Current engine note: the live engine uses this interface for snapshots, diffing, and merge-queue conflict detection. Work-branch creation and cancellation cleanup are implemented in the git package but not yet triggered by `CreateRun` / `CancelRun`.
+The live engine uses this interface for the full git lifecycle: snapshots, diffing, and merge-queue conflict detection, plus work-branch creation via `Engine.StartRun` and cancellation cleanup via `Engine.CancelRun`.
 
 ## Test Coverage
 

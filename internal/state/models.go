@@ -32,8 +32,13 @@ const (
 )
 
 var validRunTransitions = map[RunStatus][]RunStatus{
-	RunDraftSRS:            {RunAwaitingSRSApproval},
-	RunAwaitingSRSApproval: {RunActive, RunDraftSRS},
+	// Pre-active states are cancellable so users can abandon a run while
+	// waiting on the external orchestrator to submit an SRS draft. Per
+	// Architecture §23.4 there is no safety concern: no containers exist
+	// and no commits exist for such runs — the cancel flow is a DB-only
+	// transition plus a no-op git cleanup.
+	RunDraftSRS:            {RunAwaitingSRSApproval, RunCancelled},
+	RunAwaitingSRSApproval: {RunActive, RunDraftSRS, RunCancelled},
 	RunActive:              {RunPaused, RunCancelled, RunCompleted, RunError},
 	RunPaused:              {RunActive, RunCancelled},
 }

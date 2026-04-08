@@ -165,11 +165,15 @@ Architecture target branch names follow:
 axiom/<project-slug>
 ```
 
-The branch name is deterministic — given the same project slug, the branch name is always the same. The `internal/gitops.Manager` already implements clean-tree validation plus create-or-resume work-branch setup for this workflow.
+The branch name is deterministic — given the same project slug, the branch name is always the same.
 
-Current CLI/runtime behavior is narrower: `axiom run` persists the intended `work_branch` in run state and shows it in status output, but it does not yet automatically create or check out that branch.
+**Full lifecycle:**
 
-Current CLI/runtime behavior also does not yet reject dirty working trees at run start. Keep the tree clean manually if you want to stay aligned with the architecture's intended workflow.
+1. **Start** — `axiom run "<prompt>"` validates that the working tree is clean (Architecture §28.2), then creates (or resumes) the `axiom/<slug>` branch and switches the repo onto it. All task work lands on this branch, never on the base branch.
+2. **Dirty-tree refusal** — if the working tree has uncommitted changes, `axiom run` exits non-zero with a message naming the condition. Pass `--allow-dirty` for crash-recovery scenarios where resuming on a branch with uncommitted state is intentional.
+3. **Task commits** — meeseeks output lands as individual commits on the work branch, each with an architecture-compliant commit message (§23.2).
+4. **Completion** — the user reviews the work branch diff (`git diff main...axiom/<slug>`) and merges at their discretion. Axiom never pushes, pulls, or merges automatically.
+5. **Cancellation** — `axiom cancel` reverts any uncommitted changes on the work branch, returns the repo to the base branch, and stops any running containers. Committed work on the `axiom/<slug>` branch is preserved per §23.4 — the branch is not deleted. `axiom cancel` works from every non-terminal state, including `draft_srs` and `awaiting_srs_approval`.
 
 See [Git Operations Reference](git-operations.md) for implementation details.
 

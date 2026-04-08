@@ -109,7 +109,7 @@ The engine provides run lifecycle methods that enforce state machine transitions
 | Create run | (new) -> `draft_srs` | `run_created` |
 | Pause run | `active` -> `paused` | `run_paused` |
 | Resume run | `paused` -> `active` | `run_resumed` |
-| Cancel run | `active`/`paused` -> `cancelled` | `run_cancelled` |
+| Cancel run | `draft_srs`/`awaiting_srs_approval`/`active`/`paused` -> `cancelled` | `run_cancelled` |
 | Complete run | `active` -> `completed` | `run_completed` |
 | Fail run | `active` -> `error` | `run_error` |
 
@@ -139,16 +139,17 @@ ECOs allow controlled environmental changes during execution without modifying t
 
 ### `axiom run "<prompt>"`
 
-Create a new project run record in `draft_srs` status for external-orchestrator handoff.
+Create a new project run in `draft_srs` status for external-orchestrator handoff. `axiom run` refuses to start on a dirty working tree (Architecture §28.2) and switches the repo onto `axiom/<slug>` before handing off to the orchestrator.
 
 ```bash
-axiom run "<prompt>" [--budget <usd>]
+axiom run "<prompt>" [--budget <usd>] [--allow-dirty]
 ```
 
 **Flags:**
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--budget` | config value | Budget in USD |
+| `--allow-dirty` | `false` | Bypass the clean-working-tree check (recovery only — logs a loud `WARN` and routes through the recovery-mode work branch setup) |
 
 **Example:**
 ```bash
@@ -161,7 +162,7 @@ Run created: a1b2c3d4-...
 
 Next step: use your appointed external orchestrator to generate and submit the SRS draft.
 
-**Current implementation note:** the command currently persists the run, budget ceiling, base branch, and target `work_branch`, then emits `run_created`. It does not generate the SRS, start task execution, set up the work branch, or reject a dirty working tree automatically. The near-term model is external-orchestrator handoff, not embedded auto-bootstrap, but the current binary still has stale messaging and does not yet persist the prompt end to end or wire `submit_srs` through the live runtime.
+Use `--allow-dirty` only for crash-recovery scenarios where resuming work on a branch with legitimate uncommitted state is intentional. For everyday use, commit or stash local changes before `axiom run`.
 
 ### `axiom pause`
 
@@ -173,9 +174,18 @@ Transition a paused run back to `active`. Only works when a run is currently in 
 
 ### `axiom cancel`
 
-Transition a run to `cancelled`. Works from `active` or `paused` status.
+Cancel a run and execute the architectural cancel protocol:
 
-**Current implementation note:** this updates run state and emits `run_cancelled`, but container shutdown and git cleanup are not yet wired into the command path.
+1. Flip the run status to `cancelled` (atomic barrier against further task dispatch).
+2. Stop any containers still running for the run.
+3. Revert uncommitted changes on the work branch and switch the repo back to the base branch (`git reset --hard HEAD`, `git clean -fd`, `git checkout <base>`).
+4. Emit the `run_cancelled` event.
+
+Committed work on the `axiom/<slug>` branch is **preserved** per Architecture §23.4 — the branch is not deleted, so the user can review it, cherry-pick from it, or delete it manually.
+
+`axiom cancel` works from every non-terminal run state, including `draft_srs` and `awaiting_srs_approval` — a user who realises they typed the wrong prompt can cancel immediately without waiting for the orchestrator to respond.
+
+Container and git cleanup are **fail-open**: if either step fails, the cancel still completes and the user's intent is recorded. A failed git cleanup logs an explicit `git reset --hard && git checkout <base>` recovery command so the user can finish cleanup manually.
 
 ### `axiom export`
 
