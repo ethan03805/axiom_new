@@ -8,7 +8,7 @@ axiom/
 │   └── axiom/              # CLI entrypoint
 │       └── main.go         # Cobra command definitions
 ├── internal/               # Private application packages
-│   ├── app/                # Composition root (wires config, state, engine)
+│   ├── app/                # Composition root (wires config, state, event bus, inference broker, and engine; runs the inference-plane startup health check)
 │   ├── config/             # TOML config loading, validation, layering
 │   ├── engine/             # Trusted engine runtime (Phase 3+)
 │   │   ├── interfaces.go   # Service interfaces (GitService, ContainerService, InferenceService, IndexService, ModelService)
@@ -296,7 +296,7 @@ Current test coverage by package:
 |---------|-------|----------|
 | `cmd/axiom` | 2 | Fixture-backed Cobra integration coverage for `init`, `run`, and `status` flows across greenfield and existing-project scenarios |
 | `internal/version` | 2 | Version string formatting |
-| `internal/app` | 1 | Project discovery from subdirectories, startup recovery invocation, registry/BitNet/engine composition |
+| `internal/app` | 6 | Project discovery from subdirectories, startup recovery invocation, registry/BitNet/engine composition; default validation runner wiring and escape-hatch fallback (3 tests); Issue 07 inference plane wiring guards (4 tests: broker injected, fail-fast when no provider configured, IPC monitor routes real broker, `inference plane ready` INFO log and no credential leak) |
 | `internal/config` | 10 | Default values, validation, TOML loading, round-trip serialization, layered config |
 | `internal/state` | 123 | DB lifecycle (5), projects (6), runs (8), tasks (15), attempts (10), sessions (17: create/get/list/activity/messages/uniqueness/summaries/input-history + Phase 15: update-mode/update-run-id/get-summaries/input-history-by-project/message-count/delete-before/latest-session), events/costs (7), ECOs (5), containers (5), model registry (13), semantic index (22), api tokens (10: create/duplicate-hash/get-by-hash/not-found/list/revoke/revoke-not-found/update-last-used/list-revoked/delete-expired) |
 | `internal/project` | 9 | Init, duplicate detection, slugify, discover, paths, SRS write/verify |
@@ -415,6 +415,7 @@ Phase 20 has started the stabilization and release hardening pass:
   - ~~`engine.CreateRun` persists `work_branch` metadata but does not yet call the git package's `SetupWorkBranch`, so branch checkout and dirty-tree enforcement are not active in the live `axiom run` path.~~ **Resolved by Issues 01 and 06:** `Engine.StartRun` (Issue 01 fix) now calls `ValidateClean` and `SetupWorkBranch` on the `axiom run` path, and `Engine.CancelRun` (Issue 06 fix) now calls `CancelCleanup` to revert uncommitted state on cancel. `axiom run --allow-dirty` routes through `SetupWorkBranchAllowDirty` as a documented recovery escape hatch. See the Cancel Lifecycle section of [Git Operations Reference](git-operations.md).
   - Axiom currently relies on a user-appointed external orchestrator for initial SRS generation. No embedded orchestrator is wired into live app flows, and the run prompt / `submit_srs` handoff is still incomplete.
   - ~~The test-generation service is implemented, but automatic `CreateTestTask` / `MarkConverged` hooks are still explicit/orchestrator-driven rather than engine-wired.~~ **Resolved by Issue 05 fix:** `mergeQueueTaskAdapter.CompleteTask` / `RequeueTask` and `Engine.failAttempt` now fire `CreateTestTask`, `MarkConverged`, `HandleTestFailure`, and `MarkBlocked` automatically. `Engine.CompleteRun` also refuses to complete a run while any convergence pair is non-converged.
+  - ~~The inference broker and its providers, budget enforcer, prompt logger, and secret-aware router were built and fully unit-tested but never constructed by `app.Open`, so every meeseeks `inference_request` was answered with `"inference broker unavailable"` and the architecture's trusted-plane controls were effectively inert at runtime.~~ **Resolved by Issue 07 fix:** `app.Open` now constructs a shared `*events.Bus`, the `inference.Broker` (with OpenRouter and/or BitNet providers), and the `observability.PromptLogger`, then injects the broker into `engine.New(engine.Options{..., Inference: broker, Bus: sharedBus, ...})`. A startup health check (`checkInferencePlane`) fails loud when the configured orchestrator runtime requires a cloud provider that is not configured, warns on offline start, and emits a single `inference plane ready` INFO line naming providers / budget / log-prompts state without leaking credentials. Regression tests in `internal/app/app_test.go` guard every acceptance criterion from Issue 07 §7. See [Inference Broker § Composition Root](inference-broker.md#composition-root) for the full wiring contract.
 
 ### Phase 18 Summary
 
@@ -807,7 +808,7 @@ Phase 7 implemented the model registry and BitNet server lifecycle per Architect
 
 - **Engine integration** — `ModelService` interface added to `engine/interfaces.go` with `RefreshShipped`, `RefreshOpenRouter`, `RefreshBitNet`, `List`, and `Get` methods. `ModelInfo` struct includes all registry fields plus performance history. `Models` field added to `Engine.Options` and wired in `Engine` constructor.
 
-- **App wiring** (`app/app.go`) — `Open()` now creates a `models.Registry`, loads shipped models at startup, creates a `bitnet.Service`, and passes a `RegistryAdapter` as the engine's `ModelService`. Both `Registry` and `BitNet` service are exposed on the `App` struct for CLI access.
+- **App wiring** (`app/app.go`) — `Open()` now creates a `models.Registry`, loads shipped models at startup, creates a `bitnet.Service`, and passes a `RegistryAdapter` as the engine's `ModelService`. `Registry`, `BitNet`, and (since Issue 07) `Broker` are all exposed on the `App` struct for CLI / TUI / API access. The inference broker itself is constructed between registry load and `engine.New`, using `registry.BrokerMaps()` for pricing + tier data and a shared `*events.Bus` that is also injected into the engine — see the Issue 07 note in Phase 20 Summary below.
 
 - **Known deferred items:**
   - First-run weight download with confirmation prompt (Architecture Section 19.9)

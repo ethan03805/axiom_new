@@ -54,6 +54,14 @@ Current operating model: `axiom run` creates the run state, but a user-appointed
 - Fails if `.axiom/` already exists (use a fresh directory)
 - Fails if the generated config is somehow invalid (should not happen with defaults)
 
+Note: `axiom init` itself does not open the engine, so it does not
+trigger the inference-plane startup health check. The check runs the
+first time any command that calls `app.Open` is invoked (`axiom run`,
+`axiom status`, the TUI, etc). If the default runtime `claw` is
+configured but no OpenRouter key is set, that later command fails with
+`no inference provider available for configured orchestrator runtime`.
+See [Getting Started § Set Your OpenRouter API Key Before `axiom run`](getting-started.md#set-your-openrouter-api-key-before-axiom-run).
+
 ### `axiom status`
 
 Show the current project status.
@@ -163,6 +171,11 @@ Run created: a1b2c3d4-...
 Next step: use your appointed external orchestrator to generate and submit the SRS draft.
 
 Use `--allow-dirty` only for crash-recovery scenarios where resuming work on a branch with legitimate uncommitted state is intentional. For everyday use, commit or stash local changes before `axiom run`.
+
+**Errors:**
+
+- `working tree has uncommitted changes` — commit or stash, or pass `--allow-dirty` for recovery.
+- `no inference provider available for configured orchestrator runtime: runtime "<name>" requires an openrouter API key` — the inference-plane startup health check (Issue 07 fix) refused to open the engine because the configured runtime requires a cloud provider that has not been configured. Set `[inference].openrouter_api_key` in `~/.axiom/config.toml` and retry. See [Getting Started § Set Your OpenRouter API Key Before `axiom run`](getting-started.md#set-your-openrouter-api-key-before-axiom-run).
 
 ### `axiom pause`
 

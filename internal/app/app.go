@@ -2,24 +2,36 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
+	"sort"
+	"time"
 
 	"github.com/openaxiom/axiom/internal/bitnet"
 	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/container"
 	"github.com/openaxiom/axiom/internal/engine"
+	"github.com/openaxiom/axiom/internal/events"
 	"github.com/openaxiom/axiom/internal/gitops"
 	"github.com/openaxiom/axiom/internal/index"
+	"github.com/openaxiom/axiom/internal/inference"
 	"github.com/openaxiom/axiom/internal/models"
+	"github.com/openaxiom/axiom/internal/observability"
 	"github.com/openaxiom/axiom/internal/project"
 	"github.com/openaxiom/axiom/internal/review"
+	"github.com/openaxiom/axiom/internal/security"
 	"github.com/openaxiom/axiom/internal/state"
 	"github.com/openaxiom/axiom/internal/task"
 	"github.com/openaxiom/axiom/internal/validation"
 )
+
+// ErrNoInferenceProvider is returned by Open when the configured orchestrator
+// runtime requires a provider that has not been configured. See Issue 07 and
+// Architecture §19.5.
+var ErrNoInferenceProvider = errors.New("no inference provider available for configured orchestrator runtime")
 
 // App is the Axiom application composition root.
 // It wires together config, state, engine, and services.
@@ -29,6 +41,7 @@ type App struct {
 	Engine      *engine.Engine
 	Registry    *models.Registry
 	BitNet      *bitnet.Service
+	Broker      *inference.Broker
 	ProjectRoot string
 	Log         *slog.Logger
 }
@@ -97,13 +110,77 @@ func Open(log *slog.Logger) (*App, error) {
 	})
 	taskSvc := task.New(db, log)
 
+	// Phases 6, 7, 18, 19 — wire the inference control plane.
+	//
+	// The broker owns provider routing, budget enforcement, model-tier
+	// allowlists, secret-aware local-forcing, rate limiting, cost logging,
+	// and sanitized prompt persistence. It depends on:
+	//   - a shared *events.Bus so subscribers see every emitted event,
+	//   - the registry's BrokerMaps() snapshot for pricing + tier data,
+	//   - a PromptLogger scoped to the project root,
+	//   - zero or more concrete providers (OpenRouter, BitNet).
+	//
+	// The bus is constructed here and shared with engine.New so both sides
+	// publish to the same subscribers. Per Issue 07 §4.2 Option A, this
+	// avoids any partially-initialized window between the broker and the
+	// engine's IPC monitor.
+	sharedBus := events.New(db, log)
+	securityPolicy := security.NewPolicy(cfg.Security)
+	promptLogger := observability.NewPromptLogger(
+		root,
+		cfg.Observability.LogPrompts,
+		securityPolicy,
+	)
+
+	var cloudProvider inference.Provider
+	if cfg.Inference.OpenRouterAPIKey != "" {
+		timeout := time.Duration(cfg.Inference.TimeoutSeconds) * time.Second
+		cloudProvider = inference.NewOpenRouterProvider(
+			cfg.Inference.OpenRouterBase,
+			cfg.Inference.OpenRouterAPIKey,
+			inference.WithTimeout(timeout),
+		)
+	}
+
+	var localProvider inference.Provider
+	if cfg.BitNet.Enabled {
+		localProvider = inference.NewBitNetProvider(
+			fmt.Sprintf("http://%s:%d", cfg.BitNet.Host, cfg.BitNet.Port),
+		)
+	}
+
+	pricing, tiers := registry.BrokerMaps()
+
+	broker := inference.NewBroker(inference.BrokerConfig{
+		Config:        cfg,
+		DB:            db,
+		Bus:           sharedBus,
+		Log:           log,
+		CloudProvider: cloudProvider,
+		LocalProvider: localProvider,
+		ModelPricing:  pricing,
+		ModelTiers:    tiers,
+		PromptLogger:  promptLogger,
+	})
+
+	// Cross-check runtime configuration against available providers before
+	// building the engine. Fail fast on misconfiguration; warn (do not abort)
+	// when providers simply cannot be reached right now, since offline
+	// startup for later local-only runs is a legitimate flow.
+	if err := checkInferencePlane(cfg, broker, cloudProvider, localProvider, log); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	eng, err := engine.New(engine.Options{
 		Config:     cfg,
 		DB:         db,
 		RootDir:    root,
 		Log:        log,
+		Bus:        sharedBus,
 		Git:        gitSvc,
 		Container:  containerSvc,
+		Inference:  broker,
 		Index:      indexer,
 		Models:     modelService,
 		Validation: validation.NewEngineAdapter(validationSvc),
@@ -133,9 +210,84 @@ func Open(log *slog.Logger) (*App, error) {
 		Engine:      eng,
 		Registry:    registry,
 		BitNet:      bitnetSvc,
+		Broker:      broker,
 		ProjectRoot: root,
 		Log:         log,
 	}, nil
+}
+
+// checkInferencePlane cross-checks the configured orchestrator runtime
+// against the providers that were actually constructed, and emits a
+// single INFO / WARN startup summary.
+//
+// Policy:
+//   - If the runtime requires a cloud provider and none is configured,
+//     return ErrNoInferenceProvider (fail loud, not silent).
+//   - If at least one provider is configured but none currently reports
+//     Available(), log a WARN and emit a ProviderUnavailable event but do
+//     not abort — the user may be offline and intend to configure later.
+//   - Otherwise, log a single INFO line naming available providers, the
+//     budget ceiling, and whether prompt logging is enabled. The API key
+//     itself is never logged.
+func checkInferencePlane(
+	cfg *config.Config,
+	broker *inference.Broker,
+	cloud inference.Provider,
+	local inference.Provider,
+	log *slog.Logger,
+) error {
+	if broker == nil {
+		return errors.New("inference broker is nil")
+	}
+
+	// Collect configured provider names (deterministic order for tests
+	// and operator-friendly log grepping).
+	var providers []string
+	if cloud != nil {
+		providers = append(providers, cloud.Name())
+	}
+	if local != nil {
+		providers = append(providers, local.Name())
+	}
+	sort.Strings(providers)
+
+	// Orchestrator runtime cross-check. The set of "cloud-required"
+	// runtimes is currently every runtime except explicit local-only
+	// modes (none of which exist yet), so any configured runtime that
+	// implies cloud meeseeks needs an OpenRouter key.
+	runtime := cfg.Orchestrator.Runtime
+	cloudRequired := runtime == "claw" ||
+		runtime == "claude-code" ||
+		runtime == "codex" ||
+		runtime == "opencode"
+	if cloudRequired && cloud == nil {
+		return fmt.Errorf("%w: runtime %q requires an openrouter API key", ErrNoInferenceProvider, runtime)
+	}
+
+	// Degenerate case: no providers at all. This should be unreachable
+	// for a valid config (Default enables BitNet and Validate rejects
+	// unknown runtimes), but we still guard it explicitly.
+	if len(providers) == 0 {
+		return fmt.Errorf("%w: no providers configured", ErrNoInferenceProvider)
+	}
+
+	if !broker.Available() {
+		// Providers are configured but none is currently reachable.
+		// Do not hard-fail; operators may legitimately boot offline.
+		log.Warn("inference plane providers unreachable at startup; continuing",
+			"providers", providers,
+			"runtime", runtime,
+		)
+	} else {
+		log.Info("inference plane ready",
+			"providers", providers,
+			"budget_max_usd", cfg.Budget.MaxUSD,
+			"log_prompts", cfg.Observability.LogPrompts,
+			"runtime", runtime,
+		)
+	}
+
+	return nil
 }
 
 // Close shuts down the application and engine.

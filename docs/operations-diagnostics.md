@@ -51,6 +51,66 @@ The current implementation runs these checks in order:
 
 The command currently prints a report even when one or more checks fail. If you automate around it, inspect the status labels in stdout rather than relying on the process exit code alone.
 
+## Inference Plane Startup Health Check
+
+As of Issue 07, `app.Open` runs a single-pass health check over the
+inference control plane immediately after constructing the broker and
+before `engine.New(...)` returns. The check has three visible outputs an
+operator can grep for:
+
+### INFO: `inference plane ready`
+
+Emitted once per successful `app.Open` when at least one provider is
+currently reachable. Example (structured log line):
+
+```text
+INFO inference plane ready providers=[openrouter] budget_max_usd=10 log_prompts=false runtime=claw
+```
+
+Fields:
+
+- `providers` — deterministic, sorted list of configured provider names
+  (`openrouter`, `bitnet`, or both). Credentials never appear here.
+- `budget_max_usd` — the value of `[budget].max_usd` from config.
+- `log_prompts` — whether `[observability].log_prompts` is enabled.
+- `runtime` — the active `[orchestrator].runtime` (`claw`,
+  `claude-code`, `codex`, or `opencode`).
+
+### WARN: `inference plane providers unreachable at startup; continuing`
+
+Emitted when at least one provider is **configured** (e.g. an OpenRouter
+API key is set) but none currently reports
+`Available(ctx) == true`. This is the intended offline-startup path:
+the engine still starts, but every cloud inference request will fail
+with `ErrProviderDown` until the network comes back.
+
+```text
+WARN inference plane providers unreachable at startup; continuing providers=[openrouter] runtime=claw
+```
+
+### Startup error: `no inference provider available for configured orchestrator runtime`
+
+Emitted when the configured runtime requires a cloud provider (any of
+`claw`, `claude-code`, `codex`, `opencode`) but no OpenRouter API key is
+set in config. `app.Open` returns `ErrNoInferenceProvider` (wrapped)
+and the process exits non-zero — **this is a fail-loud path, not a
+warning**. Example operator-visible message:
+
+```text
+no inference provider available for configured orchestrator runtime: runtime "claw" requires an openrouter API key
+```
+
+Fix: set `[inference].openrouter_api_key` in the global config at
+`~/.axiom/config.toml` (keep secrets out of the project config per
+Architecture §29.4), then restart Axiom.
+
+### `provider_unavailable` runtime events
+
+The broker also emits a `provider_unavailable` event at runtime
+(distinct from the startup check) whenever the selected tier has no
+reachable provider for an active inference request. Subscribe to this
+event to be paged when previously-healthy providers flap.
+
 ## Startup Recovery
 
 Startup recovery runs before background workers begin processing.

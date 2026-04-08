@@ -249,6 +249,28 @@ Phase 18 adds three security-specific event types:
 
 These events are persisted through the standard `events` table and therefore appear anywhere normal engine event history is surfaced.
 
+## Composition Root Wiring
+
+As of Issue 07, the secret-aware router is **live in production**. The
+inference broker — and with it, the `security.Policy` instance that drives
+every redaction and local-route decision — is constructed in
+[`internal/app/app.go`](../internal/app/app.go) inside `app.Open` and
+injected into `engine.New(...)` via `engine.Options.Inference`. The same
+`security.NewPolicy(cfg.Security)` instance is also passed to the
+`observability.PromptLogger` so the on-disk prompt log applies the
+identical redaction pass.
+
+There is no runtime path that bypasses the broker. The engine's IPC
+monitor (`internal/engine/ipcmonitor.go`) routes every meeseeks
+`inference_request` through `Engine.inference.Infer(...)` — the same
+interface the broker implements. If the broker is ever missing, the
+startup health check in `app.Open` fails loud with
+`ErrNoInferenceProvider` instead of silently answering requests with
+`"inference broker unavailable"`.
+
+See [Inference Broker → Composition Root](inference-broker.md#composition-root)
+for the exact wiring sequence and the regression tests that guard it.
+
 ## Prompt Logging
 
 Phase 19 adds prompt-log persistence on top of the phase-18 redaction layer.

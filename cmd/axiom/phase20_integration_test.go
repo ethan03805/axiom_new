@@ -9,10 +9,72 @@ import (
 	"testing"
 
 	"github.com/openaxiom/axiom/internal/cli"
+	"github.com/openaxiom/axiom/internal/config"
 	"github.com/openaxiom/axiom/internal/project"
 	"github.com/openaxiom/axiom/internal/testfixtures"
 	"github.com/spf13/cobra"
 )
+
+// patchConfigWithTestInferenceProvider rewrites the freshly-initialized
+// .axiom/config.toml to set a fake OpenRouter API key so the production
+// inference-plane health check (Issue 07 §4.3) passes. CLI integration
+// tests that exercise app.Open must call this after initCmd runs.
+//
+// The key itself is synthetic and never leaves the test host — the
+// broker is constructed but its cloud provider is configured to point
+// at a loopback address that is not actually contacted by these tests,
+// which stop well before any real inference request.
+func patchConfigWithTestInferenceProvider(t *testing.T, repoDir string) {
+	t.Helper()
+
+	cfgPath := filepath.Join(repoDir, project.AxiomDir, project.ConfigFile)
+	existing, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	// Parse the existing (default) config so we preserve its project
+	// name / slug, then overlay the inference fields we care about.
+	var cfg config.Config
+	if err := unmarshalTOML(existing, &cfg); err != nil {
+		// Fall back to a fresh default if the project name is unknown
+		// to the caller; project.Init always writes a valid TOML so
+		// this path is a defensive no-op.
+		cfg = config.Default("fixture", "fixture")
+	}
+	cfg.Inference.OpenRouterAPIKey = "sk-test-fake-key"
+	cfg.Inference.OpenRouterBase = "http://127.0.0.1:1"
+	cfg.Inference.TimeoutSeconds = 1
+	cfg.BitNet.Enabled = false
+
+	data, err := config.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+// unmarshalTOML is a tiny adapter so the helper above can reuse the
+// config package's Load path without the full filesystem dance.
+func unmarshalTOML(data []byte, out *config.Config) error {
+	tmp, err := os.CreateTemp("", "axiom-cfg-*.toml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	tmp.Close()
+	loaded, err := config.LoadFile(tmp.Name())
+	if err != nil {
+		return err
+	}
+	*out = *loaded
+	return nil
+}
 
 func TestCLIInitRunStatusFlow_ExistingProjectFixture(t *testing.T) {
 	repoDir, err := testfixtures.Materialize("existing-go")
@@ -28,6 +90,7 @@ func TestCLIInitRunStatusFlow_ExistingProjectFixture(t *testing.T) {
 		if !strings.Contains(output, "Axiom project initialized") {
 			t.Fatalf("init output missing success message:\n%s", output)
 		}
+		patchConfigWithTestInferenceProvider(t, repoDir)
 
 		statusOutput := executeCobra(t, statusCmd())
 		if !strings.Contains(statusOutput, "idle (no active run)") {
@@ -74,6 +137,7 @@ func TestCLIRun_SwitchesToWorkBranch(t *testing.T) {
 		verbose = false
 
 		executeCobra(t, initCmd(), "--name", "Fixture Existing")
+		patchConfigWithTestInferenceProvider(t, repoDir)
 		gitCommitAll(t, repoDir, "axiom init")
 
 		executeCobra(t, cli.RunCmd(&verbose), "Build the first feature")
@@ -101,6 +165,7 @@ func TestCLIRun_RefusesDirtyTree(t *testing.T) {
 		// `axiom init` writes .axiom/ artifacts; we intentionally do NOT
 		// commit them so the working tree is dirty when we try to run.
 		executeCobra(t, initCmd(), "--name", "Fixture Existing")
+		patchConfigWithTestInferenceProvider(t, repoDir)
 
 		output, err := executeCobraExpectError(t, cli.RunCmd(&verbose), "Build something")
 		if err == nil {
@@ -127,6 +192,7 @@ func TestCLIRun_AllowDirtyBypass(t *testing.T) {
 
 		// Leave .axiom/ uncommitted on purpose.
 		executeCobra(t, initCmd(), "--name", "Fixture Existing")
+		patchConfigWithTestInferenceProvider(t, repoDir)
 
 		executeCobra(t, cli.RunCmd(&verbose), "--allow-dirty", "Recover after crash")
 
@@ -155,6 +221,7 @@ func TestCLICancel_CleansUpAndReturnsToBase(t *testing.T) {
 		verbose = false
 
 		executeCobra(t, initCmd(), "--name", "Fixture Existing")
+		patchConfigWithTestInferenceProvider(t, repoDir)
 		gitCommitAll(t, repoDir, "axiom init")
 
 		executeCobra(t, cli.RunCmd(&verbose), "Build the first feature")
@@ -209,6 +276,7 @@ func TestCLIInitDefaultsNameFromGreenfieldDirectory(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(repoDir, ".axiom", "config.toml")); err != nil {
 			t.Fatalf("config.toml not written: %v", err)
 		}
+		patchConfigWithTestInferenceProvider(t, repoDir)
 
 		statusOutput := executeCobra(t, statusCmd())
 		if !strings.Contains(statusOutput, "idle (no active run)") {

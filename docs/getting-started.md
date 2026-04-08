@@ -81,6 +81,37 @@ The generated `.axiom/config.toml` contains all configuration with architecture 
 
 User-wide defaults and secrets such as the OpenRouter API key live in `~/.axiom/config.toml`. Optional managed BitNet launch settings also belong there when you want `axiom bitnet start` / `stop` to control a local server process.
 
+### Set Your OpenRouter API Key Before `axiom run`
+
+The default `orchestrator.runtime` is `claw`, which implies cloud
+meeseeks. As of the Issue 07 fix, `axiom` now validates the inference
+plane at startup and refuses to open a project when the selected runtime
+requires a cloud provider but no key is set:
+
+```text
+no inference provider available for configured orchestrator runtime: runtime "claw" requires an openrouter API key
+```
+
+To resolve, add your OpenRouter key to the global config (keeping
+secrets out of the project config per Architecture §29.4):
+
+```toml
+# ~/.axiom/config.toml
+[inference]
+openrouter_api_key = "sk-or-v1-..."
+```
+
+After the first successful startup, you should see a single INFO log
+line summarizing the plane state:
+
+```text
+inference plane ready providers=[openrouter] budget_max_usd=10 log_prompts=false runtime=claw
+```
+
+The API key itself never appears in the log line. See [Operations &
+Diagnostics Reference § Inference Plane Startup Health Check](operations-diagnostics.md#inference-plane-startup-health-check)
+for the full set of startup outcomes.
+
 See [Operations & Diagnostics Reference](operations-diagnostics.md) for startup recovery, prompt logs, `axiom doctor`, and managed BitNet behavior.
 
 ## Secret Handling and Prompt Safety

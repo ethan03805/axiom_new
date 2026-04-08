@@ -118,6 +118,65 @@ broker := inference.NewBroker(inference.BrokerConfig{
 
 `PromptLogger` is optional. Pass `nil` to disable file-based prompt logging.
 
+## Composition Root
+
+In production there is exactly **one** place where the broker is constructed:
+[`internal/app/app.go`](../internal/app/app.go) inside `app.Open`. The
+composition root owns the ordering contract between the broker and its
+collaborators:
+
+1. The event bus (`events.New`) is constructed **before** the broker so the
+   same `*events.Bus` instance can be handed to both the broker and
+   `engine.New(...)` via `engine.Options.Bus`. This avoids any
+   partially-initialized window where the broker has been created but the
+   engine's IPC monitor is still looking at a different bus.
+2. `security.NewPolicy(cfg.Security)` is built once and reused by both the
+   broker (via `BrokerConfig.Config`, which `NewBroker` forwards to its
+   own `security.NewPolicy` call) and `observability.NewPromptLogger`,
+   keeping secret-handling behavior consistent across the two.
+3. `cloudProvider` is instantiated only when `cfg.Inference.OpenRouterAPIKey`
+   is non-empty; `localProvider` only when `cfg.BitNet.Enabled` is true.
+   The broker accepts `nil` for either — the check below catches the
+   degenerate combinations.
+4. `registry.BrokerMaps()` is consumed immediately after
+   `registry.RefreshShipped()` so the pricing and tier maps reflect the
+   current shipped catalog.
+5. After `NewBroker`, a **startup health check** (`checkInferencePlane`)
+   runs. It:
+   - Returns `ErrNoInferenceProvider` (fail loud, not silent) when the
+     configured `cfg.Orchestrator.Runtime` requires a cloud provider and
+     none is configured. For example, `runtime = "claw"` with no
+     `openrouter_api_key` set is rejected at startup with a message that
+     names the missing key.
+   - Logs a WARN (`inference plane providers unreachable at startup; continuing`)
+     when providers are configured but none currently reports
+     `Available(ctx) == true`. This is the intentional offline-startup
+     path — operators may launch Axiom without network access and
+     configure local-only runs later.
+   - Logs a single INFO (`inference plane ready`) summary naming the
+     available providers, the budget ceiling, the configured runtime,
+     and whether prompt logging is enabled. **The API key value itself
+     never appears in any log line.**
+6. Only then is `engine.New(...)` called, with `Bus`, `Inference: broker`,
+   and the rest of the service graph.
+
+The broker is also exposed on the `App` struct (`App.Broker`) so the TUI,
+API, and diagnostics surfaces can observe provider availability and
+budget state without reaching through the engine.
+
+Regression tests for this wiring live in
+[`internal/app/app_test.go`](../internal/app/app_test.go):
+
+- `TestOpen_WiresInferenceBroker` — guards against the broker silently
+  going missing again (the original Issue 07 defect).
+- `TestOpen_FailsFastWhenNoProviderConfigured` — guards the startup
+  health check error path.
+- `TestOpen_EmitsInferencePlaneReadyLog` — guards the INFO summary and
+  verifies the API key never leaks into logs.
+- `TestEngine_IPCMonitorUsesRealBroker` — end-to-end guard that a real
+  inference request routed through the engine reaches the broker rather
+  than the legacy `"inference broker unavailable"` short-circuit.
+
 ## Integration with Engine
 
 The broker implements `engine.InferenceService`:

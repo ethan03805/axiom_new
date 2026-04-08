@@ -134,7 +134,23 @@ The following validation rules are enforced when loading configuration:
 | `api.port` | Must be 1-65535 |
 | `bitnet.startup_timeout_seconds` | Must be >= 0 |
 
-**Note:** The `[inference]` section is not currently validated at startup — only the `openrouter_api_key` must be non-empty for cloud inference to work. Set it in the global config (`~/.axiom/config.toml`) to keep secrets out of the project config.
+### Inference Plane Startup Requirements
+
+Since the Issue 07 fix, `app.Open` runs an inference-plane health check
+immediately after constructing the broker. The check rejects config
+combinations that cannot serve any inference request:
+
+| Condition | Behavior |
+|---|---|
+| `orchestrator.runtime` is one of `claw`, `claude-code`, `codex`, or `opencode` **and** `inference.openrouter_api_key` is empty | `axiom` exits with `no inference provider available for configured orchestrator runtime: runtime "<name>" requires an openrouter API key`. Set the key in `~/.axiom/config.toml` (global) to keep secrets out of the project config, then retry. |
+| At least one provider is configured but none currently reports `Available(ctx) == true` | Startup continues, but a WARN line `inference plane providers unreachable at startup; continuing` is logged. Useful for offline startup flows; any real inference request will still fail with `ErrProviderDown` until connectivity returns. |
+| At least one provider is reachable | Startup continues and logs a single INFO line `inference plane ready providers=[...] budget_max_usd=... log_prompts=... runtime=...`. The API key value never appears in this log line. |
+
+See [Operations & Diagnostics Reference § Inference Plane Startup Health
+Check](operations-diagnostics.md#inference-plane-startup-health-check)
+for the exact log lines and
+[Inference Broker § Composition Root](inference-broker.md#composition-root)
+for the wiring contract.
 
 Invalid configurations produce actionable error messages listing all violations.
 

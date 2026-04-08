@@ -21,6 +21,12 @@ type Options struct {
 	DB         *state.DB
 	RootDir    string
 	Log        *slog.Logger
+	// Bus is an optional shared event bus. When non-nil, the engine uses
+	// it instead of constructing its own; this lets the composition root
+	// (internal/app) hand the same bus to sibling components such as the
+	// inference broker so subscribers observe every event. When nil, the
+	// engine falls back to events.New(DB, Log) to preserve test call sites.
+	Bus        *events.Bus
 	Git        GitService
 	Container  ContainerService
 	Inference  InferenceService
@@ -77,7 +83,10 @@ func New(opts Options) (*Engine, error) {
 		opts.Log = slog.Default()
 	}
 
-	bus := events.New(opts.DB, opts.Log)
+	bus := opts.Bus
+	if bus == nil {
+		bus = events.New(opts.DB, opts.Log)
+	}
 
 	e := &Engine{
 		cfg:        opts.Config,
@@ -188,6 +197,11 @@ func (e *Engine) RootDir() string { return e.rootDir }
 
 // TestGen returns the engine's test-generation service.
 func (e *Engine) TestGen() *testgen.Service { return e.testGen }
+
+// Inference returns the engine's inference service, or nil if none was wired.
+// Exposed so the composition root and regression tests can verify that the
+// inference control plane is present in the running engine.
+func (e *Engine) Inference() InferenceService { return e.inference }
 
 // emitEvent publishes an event to the bus. If persistence fails,
 // the error is logged but does not block the calling operation.
