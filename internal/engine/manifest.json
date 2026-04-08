@@ -1,5 +1,5 @@
 {
-  "task_id": "task-fail",
+  "task_id": "task-success",
   "base_snapshot": "base-sha",
   "files": {
     "added": [{"path":"hello.txt","binary":false}],

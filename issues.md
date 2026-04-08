@@ -393,6 +393,129 @@ Potential solutions:
 - Replace placeholder slash commands with real actions or hide them until implemented.
 - Add TUI smoke tests that prove `new run`, `SRS review`, and `pause/cancel` work end to end.
 
+### 9. P0: `axiom init` writes an empty project OpenRouter key that masks a valid global key
+
+Evidence:
+
+- `internal/project/project.go:54-60` writes a full default config into `.axiom/config.toml`.
+- `internal/config/config.go:137-178` builds that default config with an empty `inference.openrouter_api_key`.
+- `internal/config/config.go:312-344` loads global config first and project config second.
+- `internal/config/config.go:348-369` treats any explicitly present project field as authoritative, even when it is an empty string.
+- In Test 1, a valid global OpenRouter key in `~/.axiom/config.toml` was masked by generated project config, causing `axiom status` and `axiom tui` to fail with `runtime "claw" requires an openrouter API key`.
+
+Why this is a production blocker:
+
+- A correct global credential setup appears broken immediately after `axiom init`.
+- Core startup paths fail on a freshly initialized project even though the user followed the intended security boundary for credentials.
+
+Detailed issue:
+
+- `issues/09/09-p0-project-config-empty-openrouter-key-masks-global-key.md`
+
+### 10. P1: `axiom init` writes `bitnet.enabled = true` into project config and overrides a user's global disable
+
+Evidence:
+
+- `internal/config/config.go:160-169` defaults `bitnet.enabled` to `true`.
+- `internal/project/project.go:54-60` serializes that default into every generated project config.
+- `internal/config/config.go:312-369` then lets the project-level boolean override the global config.
+- In Test 1, global `bitnet.enabled = false` was masked by project `bitnet.enabled = true`.
+
+Why this matters:
+
+- Project initialization silently changes machine/runtime behavior that the user intentionally configured globally.
+- This directly contributed to confusing BitNet diagnostics in Test 1.
+
+Detailed issue:
+
+- `issues/10/10-p1-project-config-bitnet-default-overrides-global-disable.md`
+
+### 11. P1: `axiom doctor` treats manual BitNet mode as a failure
+
+Evidence:
+
+- `internal/doctor/doctor.go:139-149` returns `FAIL` when BitNet is enabled and `bitnet.command` is empty.
+- `internal/bitnet/service.go:215-220` explicitly says that no command means "manual setup required", not "invalid configuration".
+- `docs/getting-started.md:321-330` also describes manual BitNet servers as a supported mode.
+
+Why this matters:
+
+- Diagnostics present a supported operating mode as broken.
+- This creates immediate first-run confusion even for users who intentionally want manual BitNet control or cloud-only execution.
+
+Detailed issue:
+
+- `issues/11/11-p1-doctor-treats-manual-bitnet-mode-as-failure.md`
+
+### 12. P1: Source checkout has no reproducible path to prepare the default Docker image
+
+Evidence:
+
+- `internal/config/config.go:172` defaults `docker.image` to `axiom-meeseeks-multi:latest`.
+- `internal/doctor/doctor.go:191-199` warns when that image is missing locally.
+- `docs/development.md` and `docs/release-packaging.md` both refer to a `docker/` directory with Docker assets.
+- The current source checkout does not contain a `docker/` directory.
+
+Why this matters:
+
+- The code can detect that the default execution image is missing, but the repo does not currently expose a reliable path from warning to ready state.
+- This likely blocks real worker and validation execution on clean machines.
+
+Detailed issue:
+
+- `issues/12/12-p1-source-checkout-has-no-reproducible-path-to-prepare-default-docker-image.md`
+
+### 13. P1: `axiom run` hardcodes `main` as the base branch
+
+Evidence:
+
+- `internal/cli/run.go:51` passes `BaseBranch: "main"` into run startup.
+- `internal/gitops/gitops.go:288-299` then switches to the declared base branch before creating the work branch.
+
+Why this matters:
+
+- Repositories using `master`, `develop`, or any non-`main` default branch will fail during run creation.
+- This is a common enough repo shape to matter in practice.
+
+Detailed issue:
+
+- `issues/13/13-p1-run-hardcodes-main-as-base-branch.md`
+
+### 14. P2: Windows getting-started flow relies on POSIX `make` targets
+
+Evidence:
+
+- `docs/getting-started.md:22-23` instructs users to run `make build` and `make install`.
+- `Makefile:3`, `Makefile:25`, and `Makefile:33` use POSIX-oriented commands (`date`, `command -v`, `rm -rf`).
+- The working Windows source-install path validated in Test 1 was `go install .\cmd\axiom`, not the documented `make` flow.
+
+Why this matters:
+
+- Windows users hit avoidable setup friction before reaching actual Axiom runtime behavior.
+- The docs do not currently give the PowerShell-native path for binary install and PATH setup.
+
+Detailed issue:
+
+- `issues/14/14-p2-windows-getting-started-relies-on-posix-make.md`
+
+### 15. P2: There is no guided first-run setup flow for OpenRouter, Docker image readiness, or BitNet
+
+Evidence:
+
+- `axiom doctor` reports health state but does not repair it.
+- `internal/session/manager.go:233-235` shows that the normal startup surface is aimed at run operation, not environment setup.
+- Startup failures such as missing OpenRouter credentials occur before the TUI can open.
+- Test 1 required manual config-file inspection and editing outside the product.
+
+Why this matters:
+
+- First-run setup currently depends on external documentation and manual filesystem edits.
+- The product has diagnostics and operator surfaces, but no environment-onboarding layer.
+
+Detailed issue:
+
+- `issues/15/15-p2-no-guided-first-run-setup-flow.md`
+
 ## Overall recommendation
 
 The next milestone should not be "more packages." It should be one vertical slice that a non-technical user can actually complete:
