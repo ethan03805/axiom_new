@@ -52,6 +52,11 @@ Current operating model: `axiom run` creates the run state, but a user-appointed
 
 The generated `.axiom/config.toml` is intentionally sparse. Runtime defaults are still applied by layered config loading, and user-machine secrets such as `inference.openrouter_api_key` stay in `~/.axiom/config.toml`.
 
+BitNet settings are treated the same way. `axiom init` does not emit a
+`[bitnet]` table, so a global `bitnet.enabled = false` remains in
+effect for the new project unless you add an explicit project-local
+override.
+
 **Errors:**
 - Fails if `.axiom/` already exists (use a fresh directory)
 - Fails if the generated config is somehow invalid (should not happen with defaults)
@@ -481,6 +486,12 @@ Phase 19 Doctor Report
 [PASS] resources: Configured resource pressure is within local CPU capacity
 [PASS] cache: Project cache directories and image baseline are ready
 [PASS] security: Secret scanner patterns loaded successfully
+```
+
+If BitNet is disabled by layered config, the expected line is:
+
+```text
+[SKIP] bitnet: BitNet disabled in config
 ```
 
 The current implementation always prints the full report; for scripting, inspect the per-line status labels.

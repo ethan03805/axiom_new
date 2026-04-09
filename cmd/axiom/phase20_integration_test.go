@@ -306,6 +306,47 @@ func TestCLIStatus_InheritsGlobalOpenRouterKeyAfterInit(t *testing.T) {
 	})
 }
 
+func TestCLIDoctor_InheritsGlobalBitNetDisableAfterInit(t *testing.T) {
+	repoDir, err := testfixtures.Materialize("existing-go")
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(repoDir)) })
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	writeGlobalOpenRouterConfig(t, home, "sk-global-cli-key")
+
+	withWorkingDir(t, repoDir, func() {
+		verbose = false
+
+		output := executeCobra(t, initCmd(), "--name", "Fixture Global BitNet")
+		if !strings.Contains(output, "Axiom project initialized") {
+			t.Fatalf("init output missing success message:\n%s", output)
+		}
+
+		cfgPath := filepath.Join(repoDir, project.AxiomDir, project.ConfigFile)
+		cfgData, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatalf("ReadFile(config.toml): %v", err)
+		}
+		if strings.Contains(string(cfgData), "[bitnet]") {
+			t.Fatalf("fresh init should not emit a [bitnet] section:\n%s", string(cfgData))
+		}
+
+		doctorOutput := executeCobra(t, cli.DoctorCmd(&verbose))
+		if !strings.Contains(doctorOutput, "[SKIP] bitnet: BitNet disabled in config") {
+			t.Fatalf("doctor output should inherit global BitNet disable:\n%s", doctorOutput)
+		}
+		if strings.Contains(doctorOutput, "[FAIL] bitnet") {
+			t.Fatalf("doctor output should not treat inherited global BitNet disable as a failure:\n%s", doctorOutput)
+		}
+	})
+}
+
 func executeCobra(t *testing.T, cmd *cobra.Command, args ...string) string {
 	t.Helper()
 

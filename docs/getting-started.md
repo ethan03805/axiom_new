@@ -40,6 +40,13 @@ axiom doctor
 
 `axiom doctor` checks Docker, BitNet configuration/availability, provider reachability, local CPU pressure, cache readiness, and secret-scanner initialization. It works both inside and outside a project.
 
+If your layered config disables BitNet, the BitNet line is reported as a
+`SKIP`, not a failure. Example:
+
+```text
+[SKIP] bitnet: BitNet disabled in config
+```
+
 ## Quick Start
 
 ### 1. Initialize a Project
@@ -88,6 +95,11 @@ slug = "my-project"
 Architecture defaults are still applied at load time, and user-wide defaults and secrets such as the OpenRouter API key live in `~/.axiom/config.toml`. Optional managed BitNet launch settings also belong there when you want `axiom bitnet start` / `stop` to control a local server process.
 
 Add repo-local overrides to `.axiom/config.toml` only when you intentionally want that project to diverge from the global or built-in defaults. See [Configuration Reference](configuration.md) for the full supported schema.
+
+That applies to BitNet too: `axiom init` does not write a `[bitnet]`
+section. If you disable BitNet globally in `~/.axiom/config.toml`, a
+fresh project inherits that disable instead of silently turning BitNet
+back on.
 
 ### Set Your OpenRouter API Key Before `axiom run`
 

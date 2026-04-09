@@ -19,6 +19,17 @@ slug = "my-project"
 
 This is intentional. `axiom init` writes only committed project-scoped fields by default. User-machine settings and secrets such as `inference.openrouter_api_key` belong in `~/.axiom/config.toml`, and omitted project fields inherit from global config or built-in defaults.
 
+This includes BitNet settings. A fresh project template does not emit a
+`[bitnet]` table, so a global choice such as:
+
+```toml
+[bitnet]
+enabled = false
+```
+
+continues to apply after `axiom init` until the project config
+explicitly overrides it.
+
 ## Full Supported Schema
 
 The schema below shows every supported field after layering. `axiom init` does not emit every field into the project file.
@@ -173,6 +184,7 @@ Invalid configurations produce actionable error messages listing all violations.
 - Managed BitNet process control is disabled unless `bitnet.command` is configured. When it is set, Axiom stores managed-process state under `~/.axiom/bitnet/service.json`.
 - `axiom doctor` can load only the global/default config when run outside a project. In that case, project-specific cache checks are skipped.
 - `[orchestrator].runtime` currently names the external runtime you intend to appoint. Axiom does not auto-launch that runtime in live app flows yet.
+- Disabling BitNet in `~/.axiom/config.toml` is the normal way to turn it off for newly initialized projects. Add a project-local `[bitnet]` table only when you intentionally want one repository to behave differently from your machine-wide default.
 
 ## Security Behavior
 
@@ -214,6 +226,22 @@ max_usd = 20.00
 Result: budget is $20 (project overrides global), runtime is "claude-code" (inherited from global).
 
 The same inheritance rule applies to secrets and machine-local defaults: if the project file does not declare `inference.openrouter_api_key`, the global value remains in effect.
+
+The same rule applies to BitNet. If global config contains:
+
+```toml
+[bitnet]
+enabled = false
+```
+
+and the project config remains the sparse `axiom init` template, BitNet
+stays disabled for that project. If you want a specific repository to
+opt back in, add an explicit project override:
+
+```toml
+[bitnet]
+enabled = true
+```
 
 ## Runtime Skill Regeneration
 

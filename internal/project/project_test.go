@@ -98,6 +98,9 @@ func TestInit_WritesSparseProjectConfig(t *testing.T) {
 	if strings.Contains(content, "[inference]") {
 		t.Fatalf("config.toml should not include an [inference] section on init:\n%s", content)
 	}
+	if strings.Contains(content, "[bitnet]") {
+		t.Fatalf("config.toml should not include a [bitnet] section on init:\n%s", content)
+	}
 }
 
 func TestSlugify(t *testing.T) {

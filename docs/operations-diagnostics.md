@@ -22,6 +22,16 @@ Phase 19 Doctor Report
 [PASS] security: Secret scanner patterns loaded successfully
 ```
 
+When BitNet is intentionally disabled by layered config, the expected
+output is a skip rather than a warning or failure:
+
+```text
+Phase 19 Doctor Report
+[PASS] docker: Docker daemon reachable
+[SKIP] bitnet: BitNet disabled in config
+...
+```
+
 ### Checks
 
 The current implementation runs these checks in order:
@@ -46,6 +56,7 @@ The current implementation runs these checks in order:
 
 - Inside a project: all checks can run, including cache directory validation.
 - Outside a project: config falls back to global/default values and the cache check is reported as `SKIP`.
+- A freshly initialized project inherits omitted machine-local settings from `~/.axiom/config.toml`. If global config disables BitNet and the project keeps the default sparse template, the BitNet check remains `SKIP`.
 
 ### Automation Note
 
@@ -189,6 +200,11 @@ Managed state is recorded at:
 ```
 
 If `[bitnet].command` is not configured, `axiom bitnet start` returns an explicit manual-setup error. If the server is running but was started manually, `axiom bitnet stop` reports that it must be stopped manually.
+
+BitNet enablement and managed-process settings are layered config, not
+required project metadata. The default `axiom init` template omits the
+`[bitnet]` table, so a global disable remains in effect until a project
+adds its own explicit override.
 
 ## Relevant Events
 
