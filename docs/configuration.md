@@ -138,6 +138,17 @@ log_prompts = false                    # Persist sanitized prompt/response logs 
 log_token_counts = true                # Always log token counts
 ```
 
+The source checkout and release bundle ship the canonical Dockerfile for
+the default image at `docker/meeseeks-multi.Dockerfile`. Build it from
+the repo or bundle root with:
+
+```bash
+docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker
+```
+
+Current source-controlled Docker assets cover the default
+multi-language image only.
+
 ## Validation Rules
 
 The following validation rules are enforced when loading configuration:

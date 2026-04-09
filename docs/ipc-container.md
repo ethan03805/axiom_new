@@ -208,10 +208,10 @@ Per Architecture Section 12.2:
 
 | Image | Contents | Use Case |
 |-------|----------|----------|
-| `axiom-meeseeks-go:latest` | Go toolchain, golangci-lint | Go projects |
-| `axiom-meeseeks-node:latest` | Node.js, npm, TypeScript, eslint | JavaScript/TypeScript projects |
-| `axiom-meeseeks-python:latest` | Python 3, pip, ruff, mypy | Python projects |
-| `axiom-meeseeks-multi:latest` | Go + Node.js + Python (default) | Multi-language projects |
+| `axiom-meeseeks-multi:latest` | Shipped default image from `docker/meeseeks-multi.Dockerfile`; includes the Go toolchain, Node.js/npm, and Python 3/pip | Multi-language projects |
+| `axiom-meeseeks-go:latest` | Optional future or custom single-language variant | Go projects |
+| `axiom-meeseeks-node:latest` | Optional future or custom single-language variant | JavaScript/TypeScript projects |
+| `axiom-meeseeks-python:latest` | Optional future or custom single-language variant | Python projects |
 
 The default image is configured in `.axiom/config.toml`:
 
@@ -219,6 +219,16 @@ The default image is configured in `.axiom/config.toml`:
 [docker]
 image = "axiom-meeseeks-multi:latest"
 ```
+
+Build the shipped default image from the repo or release bundle root
+with:
+
+```bash
+docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker
+```
+
+Current source-controlled Docker assets cover only the default
+multi-language image.
 
 ### Lifecycle Methods
 

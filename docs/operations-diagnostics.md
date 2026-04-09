@@ -44,6 +44,14 @@ Phase 19 Doctor Report
 ...
 ```
 
+Missing-image example from a source checkout or release bundle root:
+
+```text
+Phase 19 Doctor Report
+[PASS] docker: Docker daemon reachable
+[WARN] cache: Docker image axiom-meeseeks-multi:latest is not present locally; build it with `docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker`
+```
+
 ### Checks
 
 The current implementation runs these checks in order:
@@ -52,7 +60,9 @@ The current implementation runs these checks in order:
 2. `bitnet` - BitNet health and launch configuration
 3. `network` - provider URL reachability
 4. `resources` - configured CPU pressure vs local CPU capacity
-5. `cache` - project runtime directories plus Docker image presence
+5. `cache` - project runtime directories plus Docker image presence; if
+   the default image is missing and `docker/meeseeks-multi.Dockerfile`
+   is present locally, the warning includes the exact build command
 6. `security` - secret-scanner policy initialization
 
 ### Status Meanings
@@ -76,6 +86,10 @@ For the BitNet check specifically:
 - Inside a project: all checks can run, including cache directory validation.
 - Outside a project: config falls back to global/default values and the cache check is reported as `SKIP`.
 - A freshly initialized project inherits omitted machine-local settings from `~/.axiom/config.toml`. If global config disables BitNet and the project keeps the default sparse template, the BitNet check remains `SKIP`.
+- When the default image is missing, the cache warning points at the
+  canonical local build command when the shipped Dockerfile is present
+  under `docker/`; otherwise it falls back to the documented workflow in
+  [Getting Started](getting-started.md).
 
 ### Automation Note
 

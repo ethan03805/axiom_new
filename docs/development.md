@@ -161,7 +161,7 @@ axiom/
 ├── migrations/             # (Legacy location — migrations are now embedded)
 ├── testdata/               # Test fixture data
 ├── scripts/                # Build and utility scripts
-├── docker/                 # Dockerfile definitions
+├── docker/                 # Shipped default runtime image build context
 ├── docs/                   # Documentation
 ├── Makefile                # Build targets
 ├── go.mod                  # Go module definition
@@ -197,6 +197,21 @@ make clean        # Remove build artifacts
 make tidy         # Run go mod tidy
 make check        # tidy + lint + test (full validation)
 ```
+
+### Default Runtime Image
+
+The source checkout now ships the canonical build context for the
+default worker image under `docker/`.
+
+Build it from the repo root with:
+
+```bash
+docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker
+```
+
+Current source-controlled Docker assets cover the default
+multi-language image only. Single-language image tags remain future or
+custom variants.
 
 ### Version Injection
 

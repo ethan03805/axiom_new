@@ -9,7 +9,9 @@ The release bundle is intended to package the minimum operator-facing artifacts 
 - compiled `axiom` binary
 - generated default `config.toml` template
 - operator documentation from `docs/`
-- Docker asset definitions from `docker/`
+- Docker asset definitions from `docker/`, including the canonical
+  `docker/meeseeks-multi.Dockerfile` build path for
+  `axiom-meeseeks-multi:latest`
 - fixture repositories from `testdata/fixtures/`
 - a markdown test matrix
 - a JSON manifest describing the bundled contents
@@ -53,6 +55,12 @@ dist/axiom-v1.0.0-rc1-windows-amd64/
   release-manifest.json
 ```
 
+Build the default runtime image from the bundle root with:
+
+```bash
+docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker
+```
+
 ## Manifest
 
 `release-manifest.json` records:
@@ -62,7 +70,7 @@ dist/axiom-v1.0.0-rc1-windows-amd64/
 - bundle directory
 - relative paths to the binary, default config, and test matrix
 - copied docs
-- copied Docker assets
+- copied Docker assets, including `docker/meeseeks-multi.Dockerfile`
 - copied fixture repositories
 - the test matrix entries embedded in the bundle
 
@@ -77,4 +85,12 @@ Fixture repositories live in `testdata/fixtures/` and are used by phase-20 integ
 
 ## Current Limitation
 
-The bundle builder packages docs, fixture repos, and Docker asset definitions, but it does not itself build or publish Docker images. Release bundles should still be treated as packaging validation rather than a final product sign-off mechanism, because image publication, external runtime provisioning, and release-process verification remain separate concerns.
+The bundle builder packages docs, fixture repos, and Docker asset
+definitions, but it does not itself build or publish Docker images.
+`BuildBundle` now fails closed if `docker/` or the canonical
+`docker/meeseeks-multi.Dockerfile` is missing, so every candidate bundle
+contains a real path to build the default image. Release bundles should
+still be treated as packaging validation rather than a final product
+sign-off mechanism, because image publication, external runtime
+provisioning, and release-process verification remain separate
+concerns.

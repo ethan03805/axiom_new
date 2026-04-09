@@ -62,6 +62,28 @@ Examples:
 [SKIP] bitnet: BitNet disabled in config
 ```
 
+### Prepare the Runtime Image
+
+A source checkout and a release bundle both ship the canonical build
+context for the default worker image under `docker/`.
+
+Build it from the checkout or bundle root with:
+
+```bash
+docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker
+```
+
+Until this image exists locally, `axiom doctor` reports a cache warning
+inside an initialized project and points at the same command:
+
+```text
+[WARN] cache: Docker image axiom-meeseeks-multi:latest is not present locally; build it with `docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker`
+```
+
+The current source-controlled Docker assets cover the default
+multi-language image only. Single-language tags remain future or custom
+variants.
+
 ## Quick Start
 
 ### 1. Initialize a Project

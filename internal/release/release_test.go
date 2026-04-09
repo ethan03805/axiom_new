@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,8 @@ func TestBuildBundle_CopiesReleaseArtifactsAndWritesManifest(t *testing.T) {
 	writeTestFile(t, filepath.Join(sourceRoot, "bin", "axiom.exe"), "binary")
 	writeTestFile(t, filepath.Join(sourceRoot, "docs", "getting-started.md"), "# Getting Started")
 	writeTestFile(t, filepath.Join(sourceRoot, "docs", "operations-diagnostics.md"), "# Operations")
-	writeTestFile(t, filepath.Join(sourceRoot, "docker", "meeseeks.Dockerfile"), "FROM alpine:3.20")
+	writeTestFile(t, filepath.Join(sourceRoot, "docker", "meeseeks-multi.Dockerfile"), "FROM golang:1.25-bookworm")
+	writeTestFile(t, filepath.Join(sourceRoot, "docker", "README.md"), "# Docker assets")
 	writeTestFile(t, filepath.Join(sourceRoot, "testdata", "fixtures", "greenfield", "README.md"), "# Greenfield")
 	writeTestFile(t, filepath.Join(sourceRoot, "testdata", "fixtures", "existing-go", "go.mod"), "module example.com/existing")
 
@@ -44,7 +46,7 @@ func TestBuildBundle_CopiesReleaseArtifactsAndWritesManifest(t *testing.T) {
 		"config/axiom.default.toml",
 		"docs/getting-started.md",
 		"docs/operations-diagnostics.md",
-		"docker/meeseeks.Dockerfile",
+		"docker/meeseeks-multi.Dockerfile",
 		"fixtures/greenfield/README.md",
 		"fixtures/existing-go/go.mod",
 		"test-matrix.md",
@@ -73,6 +75,12 @@ func TestBuildBundle_CopiesReleaseArtifactsAndWritesManifest(t *testing.T) {
 	if len(decoded.Docs) != 2 {
 		t.Fatalf("Docs count = %d, want 2", len(decoded.Docs))
 	}
+	if len(decoded.DockerAssets) != 2 {
+		t.Fatalf("DockerAssets count = %d, want 2", len(decoded.DockerAssets))
+	}
+	if !strings.Contains(strings.Join(decoded.DockerAssets, ","), "meeseeks-multi.Dockerfile") {
+		t.Fatalf("DockerAssets = %v, want canonical dockerfile included", decoded.DockerAssets)
+	}
 	if len(decoded.Fixtures) != 2 {
 		t.Fatalf("Fixtures count = %d, want 2", len(decoded.Fixtures))
 	}
@@ -86,6 +94,61 @@ func TestBuildBundle_ValidatesRequiredInputs(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for empty options")
 	}
+}
+
+func TestBuildBundle_FailsWhenDockerAssetsMissing(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(t *testing.T, sourceRoot string)
+		errSub string
+	}{
+		{
+			name: "missing docker directory",
+			setup: func(t *testing.T, sourceRoot string) {
+				writeBundlePrereqs(t, sourceRoot)
+			},
+			errSub: "required docker asset directory missing",
+		},
+		{
+			name: "missing canonical dockerfile",
+			setup: func(t *testing.T, sourceRoot string) {
+				writeBundlePrereqs(t, sourceRoot)
+				writeTestFile(t, filepath.Join(sourceRoot, "docker", "README.md"), "# Docker assets")
+			},
+			errSub: "required docker asset missing",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sourceRoot := t.TempDir()
+			outputRoot := t.TempDir()
+			tc.setup(t, sourceRoot)
+
+			_, err := BuildBundle(BundleOptions{
+				SourceRoot: sourceRoot,
+				OutputRoot: outputRoot,
+				BinaryPath: filepath.Join(sourceRoot, "bin", "axiom.exe"),
+				Version:    "v1.0.0-rc1",
+				GOOS:       "windows",
+				GOARCH:     "amd64",
+			})
+			if err == nil {
+				t.Fatal("expected BuildBundle to fail")
+			}
+			if got := err.Error(); got == "" || !strings.Contains(got, tc.errSub) {
+				t.Fatalf("error = %q, want substring %q", got, tc.errSub)
+			}
+		})
+	}
+}
+
+func writeBundlePrereqs(t *testing.T, sourceRoot string) {
+	t.Helper()
+
+	writeTestFile(t, filepath.Join(sourceRoot, "bin", "axiom.exe"), "binary")
+	writeTestFile(t, filepath.Join(sourceRoot, "docs", "getting-started.md"), "# Getting Started")
+	writeTestFile(t, filepath.Join(sourceRoot, "testdata", "fixtures", "greenfield", "README.md"), "# Greenfield")
 }
 
 func writeTestFile(t *testing.T, path string, content string) {

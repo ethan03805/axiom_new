@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/openaxiom/axiom/internal/config"
+	"github.com/openaxiom/axiom/internal/dockerassets"
 )
 
 // BundleOptions describes a release candidate bundle to assemble.
@@ -78,6 +79,9 @@ func BuildBundle(opts BundleOptions) (*Manifest, error) {
 	if err := writeDefaultConfig(filepath.Join(bundleDir, filepath.FromSlash(manifest.DefaultConfigPath))); err != nil {
 		return nil, err
 	}
+	if err := requireDockerAssets(opts.SourceRoot); err != nil {
+		return nil, err
+	}
 
 	var err error
 	manifest.Docs, err = copyTree(filepath.Join(opts.SourceRoot, "docs"), filepath.Join(bundleDir, "docs"))
@@ -125,6 +129,28 @@ func validateOptions(opts BundleOptions) error {
 	}
 	if _, err := os.Stat(opts.SourceRoot); err != nil {
 		return fmt.Errorf("stat source root: %w", err)
+	}
+
+	return nil
+}
+
+func requireDockerAssets(sourceRoot string) error {
+	dockerDir := filepath.Join(sourceRoot, filepath.FromSlash(dockerassets.DefaultBuildContextRelPath))
+	info, err := os.Stat(dockerDir)
+	if err != nil {
+		return fmt.Errorf("required docker asset directory missing: %s: %w", dockerDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("required docker asset path is not a directory: %s", dockerDir)
+	}
+
+	dockerfile := filepath.Join(sourceRoot, filepath.FromSlash(dockerassets.DefaultDockerfileRelPath))
+	info, err = os.Stat(dockerfile)
+	if err != nil {
+		return fmt.Errorf("required docker asset missing: %s: %w", dockerfile, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("required docker asset path is a directory: %s", dockerfile)
 	}
 
 	return nil

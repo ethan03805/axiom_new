@@ -217,13 +217,79 @@ func TestServiceRun_WarnsOnResourcePressureAndPassesCacheChecks(t *testing.T) {
 
 	report := svc.Run(context.Background())
 
-	if findCheck(t, report, "cache").Status != StatusPass {
+	cache := findCheck(t, report, "cache")
+	if cache.Status != StatusPass {
 		t.Fatal("expected cache readiness check to pass for initialized project directories")
+	}
+	if cache.Summary != "Project cache directories and image baseline are ready" {
+		t.Fatalf("cache summary = %q", cache.Summary)
 	}
 	if findCheck(t, report, "security").Status != StatusPass {
 		t.Fatal("expected security check to pass for built-in secret scanner patterns")
 	}
 	if findCheck(t, report, "resources").Status != StatusWarn {
 		t.Fatal("expected resources check to warn when configured CPU pressure exceeds local capacity")
+	}
+}
+
+func TestServiceCheckCache_MissingImageProvidesBuildStepWhenDockerfilePresent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".axiom", "validation"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".axiom", "logs", "prompts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docker"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docker", "meeseeks-multi.Dockerfile"), []byte("FROM golang:1.25-bookworm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default("doctor", "doctor")
+	svc := New(Options{
+		Config:      &cfg,
+		ProjectRoot: root,
+		Docker: fakeDockerChecker{
+			imageErr: errors.New("missing image"),
+		},
+	})
+
+	got := svc.checkCache(context.Background())
+	if got.Status != StatusWarn {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusWarn)
+	}
+	want := "Docker image axiom-meeseeks-multi:latest is not present locally; build it with `docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker`"
+	if got.Summary != want {
+		t.Fatalf("Summary = %q, want %q", got.Summary, want)
+	}
+}
+
+func TestServiceCheckCache_MissingImageFallsBackToDocsWhenDockerfileMissing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".axiom", "validation"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".axiom", "logs", "prompts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default("doctor", "doctor")
+	svc := New(Options{
+		Config:      &cfg,
+		ProjectRoot: root,
+		Docker: fakeDockerChecker{
+			imageErr: errors.New("missing image"),
+		},
+	})
+
+	got := svc.checkCache(context.Background())
+	if got.Status != StatusWarn {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusWarn)
+	}
+	want := "Docker image axiom-meeseeks-multi:latest is not present locally; prepare it using the documented workflow in docs/getting-started.md"
+	if got.Summary != want {
+		t.Fatalf("Summary = %q, want %q", got.Summary, want)
 	}
 }

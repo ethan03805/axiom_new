@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/openaxiom/axiom/internal/dockerassets"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -169,7 +170,7 @@ func Default(name, slug string) Config {
 			StartupTimeoutSeconds: 30,
 		},
 		Docker: DockerConfig{
-			Image:          "axiom-meeseeks-multi:latest",
+			Image:          dockerassets.DefaultImage,
 			TimeoutMinutes: 30,
 			CPULimit:       0.5,
 			MemLimit:       "2g",

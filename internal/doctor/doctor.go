@@ -12,6 +12,7 @@ import (
 
 	"github.com/openaxiom/axiom/internal/bitnet"
 	"github.com/openaxiom/axiom/internal/config"
+	"github.com/openaxiom/axiom/internal/dockerassets"
 	"github.com/openaxiom/axiom/internal/security"
 )
 
@@ -218,10 +219,20 @@ func (s *Service) checkCache(ctx context.Context) CheckResult {
 	}
 
 	if err := s.docker.ImagePresent(ctx, s.cfg.Docker.Image); err != nil {
-		return CheckResult{Name: "cache", Status: StatusWarn, Summary: fmt.Sprintf("Docker image %s is not present locally", s.cfg.Docker.Image)}
+		return CheckResult{Name: "cache", Status: StatusWarn, Summary: s.missingImageSummary()}
 	}
 
 	return CheckResult{Name: "cache", Status: StatusPass, Summary: "Project cache directories and image baseline are ready"}
+}
+
+func (s *Service) missingImageSummary() string {
+	if s.projectRoot != "" && s.cfg.Docker.Image == dockerassets.DefaultImage {
+		if info, err := os.Stat(dockerassets.DefaultDockerfilePath(s.projectRoot)); err == nil && !info.IsDir() {
+			return fmt.Sprintf("Docker image %s is not present locally; build it with `%s`", s.cfg.Docker.Image, dockerassets.DefaultBuildCommand)
+		}
+	}
+
+	return fmt.Sprintf("Docker image %s is not present locally; prepare it using the documented workflow in docs/getting-started.md", s.cfg.Docker.Image)
 }
 
 func (s *Service) checkSecurity() CheckResult {
