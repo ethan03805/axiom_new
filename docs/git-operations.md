@@ -35,8 +35,13 @@ All work branches follow the pattern `axiom/<project-slug>` (Architecture Sectio
 | `CreateAndCheckoutBranch(dir, name) error` | Creates a new branch and switches to it |
 | `CheckoutBranch(dir, name) error` | Switches to an existing branch |
 | `BranchExists(dir, name) (bool, error)` | Reports whether a local branch exists |
+| `DetectBaseBranch(dir) (string, error)` | Resolves the repository's base branch from local state only (see below) |
 | `SetupWorkBranch(dir, baseBranch, workBranch) error` | Creates or resumes a work branch (see below) |
 | `SetupWorkBranchAllowDirty(dir, baseBranch, workBranch) error` | Recovery-mode variant that skips the clean-tree precondition and carries uncommitted state onto the work branch |
+
+### Base Branch Detection
+
+`DetectBaseBranch` is called by `Engine.CreateRun` whenever the caller does not pass an explicit `BaseBranch`, so `axiom run` works out of the box on repositories that use `master`, `develop`, or other trunk names. Detection uses local state only (no `git ls-remote`, no fetch — Architecture §23.4 forbids remote ops) and follows this precedence: (1) the branch named by `git config init.defaultBranch` if that branch exists locally; (2) the currently checked-out branch, if HEAD is not detached; (3) `main` if it exists as a local branch; (4) `master` if it exists as a local branch. If none resolve, detection returns an actionable error suggesting the user pass `axiom run --base-branch <name>` or set `init.defaultBranch`. Users can always override detection with the `--base-branch` flag.
 
 ### SetupWorkBranch
 
@@ -197,6 +202,7 @@ type GitService interface {
     CurrentHEAD(dir string) (string, error)
     IsDirty(dir string) (bool, error)
     ValidateClean(dir string) error
+    DetectBaseBranch(dir string) (string, error)
     SetupWorkBranch(dir, baseBranch, workBranch string) error
     SetupWorkBranchAllowDirty(dir, baseBranch, workBranch string) error
     CancelCleanup(dir, baseBranch string) error

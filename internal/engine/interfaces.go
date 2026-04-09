@@ -16,6 +16,11 @@ type GitService interface {
 	CurrentHEAD(dir string) (string, error)
 	IsDirty(dir string) (bool, error)
 	ValidateClean(dir string) error
+	// DetectBaseBranch resolves the repository's base branch from local
+	// state only (no remote ops). Called by CreateRun when the caller does
+	// not supply an explicit BaseBranch; see Manager.DetectBaseBranch for
+	// the precedence order.
+	DetectBaseBranch(dir string) (string, error)
 	SetupWorkBranch(dir, baseBranch, workBranch string) error
 	// SetupWorkBranchAllowDirty is the recovery-mode variant that skips the
 	// internal clean-tree check, carrying uncommitted changes over onto the

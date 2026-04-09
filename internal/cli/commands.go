@@ -25,5 +25,6 @@ func Commands(verbose *bool) []*cobra.Command {
 		SkillCmd(verbose),
 		TUICmd(verbose),
 		DoctorCmd(verbose),
+		SetupCmd(verbose),
 	}
 }

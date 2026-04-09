@@ -133,7 +133,11 @@ func (e *Engine) CreateRun(opts RunOptions) (*state.ProjectRun, error) {
 
 	baseBranch := opts.BaseBranch
 	if baseBranch == "" {
-		baseBranch = "main"
+		detected, err := e.git.DetectBaseBranch(e.rootDir)
+		if err != nil {
+			return nil, fmt.Errorf("detecting base branch: %w", err)
+		}
+		baseBranch = detected
 	}
 
 	configData, err := marshalConfig(e.cfg)

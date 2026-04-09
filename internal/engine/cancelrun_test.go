@@ -27,6 +27,9 @@ func (g *cancelTrackingGitService) CreateBranch(string, string) error    { retur
 func (g *cancelTrackingGitService) CurrentHEAD(string) (string, error)   { return "sha", nil }
 func (g *cancelTrackingGitService) IsDirty(string) (bool, error)         { return false, nil }
 func (g *cancelTrackingGitService) ValidateClean(string) error           { return nil }
+func (g *cancelTrackingGitService) DetectBaseBranch(string) (string, error) {
+	return "main", nil
+}
 func (g *cancelTrackingGitService) SetupWorkBranch(string, string, string) error {
 	return nil
 }

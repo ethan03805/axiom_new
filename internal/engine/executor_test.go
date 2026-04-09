@@ -142,6 +142,7 @@ func (g *trackingGitService) CurrentHEAD(string) (string, error) {
 }
 func (g *trackingGitService) IsDirty(string) (bool, error)                 { return false, nil }
 func (g *trackingGitService) ValidateClean(string) error                   { return nil }
+func (g *trackingGitService) DetectBaseBranch(string) (string, error)      { return "main", nil }
 func (g *trackingGitService) SetupWorkBranch(string, string, string) error           { return nil }
 func (g *trackingGitService) SetupWorkBranchAllowDirty(string, string, string) error { return nil }
 func (g *trackingGitService) CancelCleanup(string, string) error                     { return nil }
@@ -459,11 +460,24 @@ func joinQuoted(items []string) string {
 	return strings.Join(quoted, ",")
 }
 
+// mountHostPath extracts the host path for a given container mount point from
+// a list of Docker-style mount specs. Mount format is
+// "<hostPath>:<containerPath>:<perm>". On Windows hostPath contains a drive
+// letter colon (e.g. "C:\Users\..."), so a naive strings.Split(mount, ":")
+// misaligns the fields and every lookup returns "". We strip the trailing
+// ":rw" / ":ro" first, then use the last remaining ':' as the host/container
+// separator, which is correct on both POSIX and Windows paths.
 func mountHostPath(mounts []string, containerPath string) string {
 	for _, mount := range mounts {
-		parts := strings.Split(mount, ":")
-		if len(parts) >= 2 && parts[1] == containerPath {
-			return parts[0]
+		trimmed := strings.TrimSuffix(strings.TrimSuffix(mount, ":rw"), ":ro")
+		sep := strings.LastIndex(trimmed, ":")
+		if sep < 0 {
+			continue
+		}
+		host := trimmed[:sep]
+		container := trimmed[sep+1:]
+		if container == containerPath {
+			return host
 		}
 	}
 	return ""

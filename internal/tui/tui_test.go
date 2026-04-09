@@ -67,6 +67,7 @@ func (g *fakeGitService) ValidateClean(dir string) error {
 	}
 	return nil
 }
+func (g *fakeGitService) DetectBaseBranch(dir string) (string, error)              { return "main", nil }
 func (g *fakeGitService) SetupWorkBranch(dir, baseBranch, workBranch string) error { return nil }
 func (g *fakeGitService) SetupWorkBranchAllowDirty(dir, baseBranch, workBranch string) error {
 	return nil

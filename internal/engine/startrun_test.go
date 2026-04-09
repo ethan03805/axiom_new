@@ -25,6 +25,7 @@ func (g *dirtyGitService) ValidateClean(string) error {
 	g.validateCleanCalls++
 	return errors.New("working tree has uncommitted changes; commit or stash before running axiom")
 }
+func (g *dirtyGitService) DetectBaseBranch(string) (string, error) { return "main", nil }
 func (g *dirtyGitService) SetupWorkBranch(string, string, string) error {
 	g.setupWorkBranchCalls++
 	return nil

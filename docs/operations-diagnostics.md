@@ -2,6 +2,13 @@
 
 Phase 19 adds the operator-facing runtime layer for startup recovery, local diagnostics, prompt logging, and managed BitNet lifecycle control.
 
+## `axiom setup` and `axiom doctor`
+
+Axiom ships two complementary operator commands:
+
+- **`axiom setup`** is a fixer. It walks the user through the first-run prerequisites (OpenRouter key, Docker daemon, default worker image, BitNet mode) and writes surgical line edits into `~/.axiom/config.toml`. It does not call `app.Open`, so it works even when the inference-plane startup health check would refuse to open the engine. See [CLI Reference § axiom setup](cli-reference.md#axiom-setup).
+- **`axiom doctor`** is a reporter. It runs the diagnostics checks below and prints status lines, but never changes state. Use it to confirm what `axiom setup` wrote, or to investigate what is wrong before deciding how to fix it.
+
 ## `axiom doctor`
 
 Run the local diagnostics report:
@@ -144,9 +151,12 @@ warning**. Example operator-visible message:
 no inference provider available for configured orchestrator runtime: runtime "claw" requires an openrouter API key
 ```
 
-Fix: set `[inference].openrouter_api_key` in the global config at
-`~/.axiom/config.toml` (keep secrets out of the project config per
-Architecture §29.4), then restart Axiom.
+Fix: run `axiom setup`, which does not call `app.Open` and can write the
+OpenRouter key safely into `~/.axiom/config.toml` without clobbering
+unrelated fields. See [CLI Reference § axiom setup](cli-reference.md#axiom-setup).
+If you prefer to hand-edit, set `[inference].openrouter_api_key` in the
+global config at `~/.axiom/config.toml` (keep secrets out of the project
+config per Architecture §29.4), then restart Axiom.
 
 ### `provider_unavailable` runtime events
 

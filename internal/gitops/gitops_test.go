@@ -803,6 +803,124 @@ func TestCancelCleanup_CleanWorkBranch(t *testing.T) {
 }
 
 // =====================================================================
+// DetectBaseBranch
+// =====================================================================
+
+// initTestRepoOnBranch creates a temporary git repo with an initial commit
+// on the given branch name. Used by DetectBaseBranch tests to set up repos
+// with non-default trunk names without depending on system git config.
+func initTestRepoOnBranch(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	gitRun(t, dir, "init", "-b", branch)
+	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+
+	writeFile(t, dir, "README.md", "# Test\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "initial commit")
+
+	return dir
+}
+
+func TestDetectBaseBranch_RepoOnMain(t *testing.T) {
+	dir := initTestRepo(t)
+	mgr := testManager()
+
+	// Clear any inherited init.defaultBranch so the fallback tier is
+	// exercised deterministically. We want the "current branch" rule to
+	// fire, not an ambient config.
+	_ = exec.Command("git", "-C", dir, "config", "--local", "--unset-all", "init.defaultBranch").Run()
+
+	branch, err := mgr.DetectBaseBranch(dir)
+	if err != nil {
+		t.Fatalf("DetectBaseBranch: %v", err)
+	}
+	if branch != "main" {
+		t.Errorf("expected 'main', got %q", branch)
+	}
+}
+
+func TestDetectBaseBranch_RepoOnMaster(t *testing.T) {
+	dir := initTestRepoOnBranch(t, "master")
+	mgr := testManager()
+
+	// Ensure no init.defaultBranch is set locally so we exercise the
+	// "current branch" rule rather than the config rule.
+	_ = exec.Command("git", "-C", dir, "config", "--local", "--unset-all", "init.defaultBranch").Run()
+
+	branch, err := mgr.DetectBaseBranch(dir)
+	if err != nil {
+		t.Fatalf("DetectBaseBranch: %v", err)
+	}
+	if branch != "master" {
+		t.Errorf("expected 'master', got %q", branch)
+	}
+}
+
+func TestDetectBaseBranch_InitDefaultBranchOverride(t *testing.T) {
+	dir := initTestRepo(t)
+	mgr := testManager()
+
+	// Create a non-standard trunk branch and set init.defaultBranch to it.
+	// Then check out a feature branch — DetectBaseBranch should still return
+	// the configured default because that rule has the highest priority.
+	if err := mgr.CreateBranch(dir, "trunk"); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	gitRun(t, dir, "config", "--local", "init.defaultBranch", "trunk")
+	if err := mgr.CreateAndCheckoutBranch(dir, "feature/widget"); err != nil {
+		t.Fatalf("CreateAndCheckoutBranch: %v", err)
+	}
+
+	branch, err := mgr.DetectBaseBranch(dir)
+	if err != nil {
+		t.Fatalf("DetectBaseBranch: %v", err)
+	}
+	if branch != "trunk" {
+		t.Errorf("expected 'trunk' (init.defaultBranch wins), got %q", branch)
+	}
+}
+
+func TestDetectBaseBranch_InitDefaultBranchMissingFallsBack(t *testing.T) {
+	dir := initTestRepo(t)
+	mgr := testManager()
+
+	// init.defaultBranch points at a branch that doesn't exist locally. The
+	// detector should ignore it and fall through to the current-branch rule.
+	gitRun(t, dir, "config", "--local", "init.defaultBranch", "does-not-exist")
+
+	branch, err := mgr.DetectBaseBranch(dir)
+	if err != nil {
+		t.Fatalf("DetectBaseBranch: %v", err)
+	}
+	if branch != "main" {
+		t.Errorf("expected fallback to current branch 'main', got %q", branch)
+	}
+}
+
+func TestDetectBaseBranch_NoBranches(t *testing.T) {
+	dir := t.TempDir()
+	// Initialise a completely empty repo: no initial commit, no branches.
+	gitRun(t, dir, "init", "-b", "trunk")
+	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	// Do not commit anything, so refs/heads/trunk does not yet exist,
+	// CurrentBranch returns "trunk" via symbolic-ref but rev-parse returns
+	// HEAD because the branch is unborn. DetectBaseBranch should error out.
+
+	mgr := testManager()
+	_, err := mgr.DetectBaseBranch(dir)
+	if err == nil {
+		t.Fatal("expected error when repo has no branches, got nil")
+	}
+	if !strings.Contains(err.Error(), "could not detect base branch") {
+		t.Errorf("expected actionable error message, got: %v", err)
+	}
+}
+
+// =====================================================================
 // Exit Criteria: Work branch creation is deterministic
 // =====================================================================
 

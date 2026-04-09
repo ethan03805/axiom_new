@@ -8,15 +8,61 @@
 
 ## Installation
 
-### From Source
+Axiom is a single Go binary. The recommended path differs by platform. Pick one of the three below, then jump to [Verify Installation](#verify-installation).
 
 ```bash
 git clone https://github.com/ethan03805/axiom_new.git
 cd axiom_new
+```
+
+### Windows (PowerShell)
+
+This is the primary, first-class path on Windows. It does not require GNU Make or any Unix utilities.
+
+```powershell
+go install .\cmd\axiom
+```
+
+This compiles `cmd/axiom` and drops `axiom.exe` into your Go bin directory, which is `$(go env GOPATH)\bin` (typically `C:\Users\<user>\go\bin`).
+
+Verify the binary is on `PATH`:
+
+```powershell
+Get-Command axiom
+```
+
+If PowerShell reports `CommandNotFoundException`, the Go bin directory is not on `PATH`. Add it:
+
+```powershell
+# For the current PowerShell session only
+$env:Path = "$(go env GOPATH)\bin;$env:Path"
+```
+
+For a persistent fix, open **System Properties > Advanced > Environment Variables** and add `%USERPROFILE%\go\bin` to your user `Path` variable. New terminals will pick it up automatically.
+
+A one-shot helper script is also available:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+### macOS / Linux
+
+```bash
+go install ./cmd/axiom
+```
+
+This installs to `$(go env GOPATH)/bin/axiom`. Alternatively, build directly to your own bin directory:
+
+```bash
 go build -o ~/bin/axiom ./cmd/axiom
 ```
 
-Or using the Makefile (which injects version info):
+Ensure `$(go env GOPATH)/bin` (or `~/bin`) is on your `PATH`.
+
+### Using Make (optional, POSIX only)
+
+The checked-in `Makefile` is a Unix-only convenience wrapper that injects version metadata. It assumes a POSIX shell with `date`, `command -v`, and `rm -rf` available, so it does **not** work in plain Windows PowerShell. Use it only on macOS, Linux, or a POSIX-compatible shell (WSL, Git Bash):
 
 ```bash
 make build        # builds to bin/axiom
@@ -30,15 +76,36 @@ axiom version
 # axiom dev (abc1234) built 2026-04-05T... windows/amd64
 ```
 
+### Guided First-Run Setup (recommended)
+
+On a fresh machine, run the guided setup wizard before touching any project:
+
+```bash
+axiom setup
+```
+
+`axiom setup` is a plain interactive CLI that walks through the four first-run prerequisites:
+
+1. **OpenRouter key** — prompts for your key (if missing) and writes it to `~/.axiom/config.toml` without touching any other field.
+2. **Docker daemon** — probes `docker info` and prints a platform-specific remediation hint if it's unreachable.
+3. **Default worker image** — checks whether `axiom-meeseeks-multi:latest` exists locally, and offers to build it with the canonical `docker build` command.
+4. **BitNet mode** — lets you pick `disabled`, `manual`, or `managed`, and writes the choice into the global `[bitnet]` section.
+
+The wizard does not require an initialized project and does not call `app.Open()`, so it works even when the inference-plane startup health check would otherwise reject your environment (for example, on a brand-new install where no OpenRouter key is set). Use `axiom setup --non-interactive` to see what would change without being prompted.
+
+Config writes are surgical line edits — only keys you actively change are touched, so `axiom setup` cannot accidentally shadow a valid global value with an empty one (see [Configuration Reference](configuration.md) for the layering model).
+
+See [CLI Reference § axiom setup](cli-reference.md#axiom-setup) for the full walk-through.
+
 ### Run Diagnostics
 
-Before initializing a project, verify the local runtime dependencies:
+After setup, verify the local runtime dependencies:
 
 ```bash
 axiom doctor
 ```
 
-`axiom doctor` checks Docker, BitNet configuration/availability, provider reachability, local CPU pressure, cache readiness, and secret-scanner initialization. It works both inside and outside a project.
+`axiom doctor` checks Docker, BitNet configuration/availability, provider reachability, local CPU pressure, cache readiness, and secret-scanner initialization. It works both inside and outside a project. Where `axiom setup` is a fixer, `axiom doctor` is a reporter — run setup to change state, and doctor to confirm it.
 
 The BitNet line distinguishes supported states rather than treating
 every non-running server as broken:
@@ -255,13 +322,30 @@ axiom/<project-slug>
 
 The branch name is deterministic — given the same project slug, the branch name is always the same.
 
+### Base Branch Detection
+
+`axiom run` does not assume your base branch is called `main`. When you omit `--base-branch`, the engine calls `git.DetectBaseBranch` to resolve the base from local state (no `ls-remote`, no `fetch` — Architecture §23.4 forbids remote ops) in this priority order:
+
+1. The branch named by `git config init.defaultBranch`, if it exists locally.
+2. The currently checked-out branch, if HEAD is not detached.
+3. `main`, if it exists as a local branch.
+4. `master`, if it exists as a local branch.
+
+If none of those resolve, `axiom run` exits with an actionable error telling you to pass `--base-branch <name>` or set `init.defaultBranch`. You can always override detection explicitly:
+
+```bash
+axiom run --base-branch develop "Build a REST API"
+```
+
+See [Git Operations Reference § Base Branch Detection](git-operations.md#base-branch-detection) for the full precedence table.
+
 **Full lifecycle:**
 
-1. **Start** — `axiom run "<prompt>"` validates that the working tree is clean (Architecture §28.2), then creates (or resumes) the `axiom/<slug>` branch and switches the repo onto it. All task work lands on this branch, never on the base branch.
+1. **Start** — `axiom run "<prompt>"` validates that the working tree is clean (Architecture §28.2), detects (or accepts an override for) the base branch, then creates (or resumes) the `axiom/<slug>` branch and switches the repo onto it. All task work lands on this branch, never on the base branch.
 2. **Dirty-tree refusal** — if the working tree has uncommitted changes, `axiom run` exits non-zero with a message naming the condition. Pass `--allow-dirty` for crash-recovery scenarios where resuming on a branch with uncommitted state is intentional.
 3. **Task commits** — meeseeks output lands as individual commits on the work branch, each with an architecture-compliant commit message (§23.2).
-4. **Completion** — the user reviews the work branch diff (`git diff main...axiom/<slug>`) and merges at their discretion. Axiom never pushes, pulls, or merges automatically.
-5. **Cancellation** — `axiom cancel` reverts any uncommitted changes on the work branch, returns the repo to the base branch, and stops any running containers. Committed work on the `axiom/<slug>` branch is preserved per §23.4 — the branch is not deleted. `axiom cancel` works from every non-terminal state, including `draft_srs` and `awaiting_srs_approval`.
+4. **Completion** — the user reviews the work branch diff (`git diff <base>...axiom/<slug>`, where `<base>` is whatever `DetectBaseBranch` chose) and merges at their discretion. Axiom never pushes, pulls, or merges automatically.
+5. **Cancellation** — `axiom cancel` reverts any uncommitted changes on the work branch, returns the repo to the base branch recorded on the run, and stops any running containers. Committed work on the `axiom/<slug>` branch is preserved per §23.4 — the branch is not deleted. `axiom cancel` works from every non-terminal state, including `draft_srs` and `awaiting_srs_approval`.
 
 See [Git Operations Reference](git-operations.md) for implementation details.
 

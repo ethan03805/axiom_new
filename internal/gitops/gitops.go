@@ -98,6 +98,55 @@ func (m *Manager) BranchExists(dir, name string) (bool, error) {
 	return true, nil
 }
 
+// DetectBaseBranch resolves the repository's base branch from local state
+// only — no remote commands are issued (Architecture §23.4 forbids remote
+// ops). The detection priority is:
+//
+//  1. The branch named by `git config init.defaultBranch`, if that branch
+//     exists locally.
+//  2. The currently checked-out branch, if any (i.e. not a detached HEAD).
+//  3. `main` if it exists as a local branch.
+//  4. `master` if it exists as a local branch.
+//
+// Returns an error when none of the above resolves, with a message pointing
+// at the things the user can check.
+func (m *Manager) DetectBaseBranch(dir string) (string, error) {
+	// 1. init.defaultBranch config, if it exists locally.
+	//
+	// `git config --get` exits non-zero when the key is unset; we treat that
+	// as "not configured" rather than a hard error.
+	if cfg, err := m.git(dir, "config", "--get", "init.defaultBranch"); err == nil && cfg != "" {
+		exists, existsErr := m.BranchExists(dir, cfg)
+		if existsErr != nil {
+			return "", fmt.Errorf("checking init.defaultBranch %q: %w", cfg, existsErr)
+		}
+		if exists {
+			return cfg, nil
+		}
+	}
+
+	// 2. Currently checked-out branch. `rev-parse --abbrev-ref HEAD` returns
+	// "HEAD" for a detached head, which we reject as unusable.
+	if cur, err := m.git(dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		if cur != "" && cur != "HEAD" {
+			return cur, nil
+		}
+	}
+
+	// 3/4. Fall back to conventional defaults, preferring main.
+	for _, candidate := range []string{"main", "master"} {
+		exists, err := m.BranchExists(dir, candidate)
+		if err != nil {
+			return "", fmt.Errorf("checking fallback branch %q: %w", candidate, err)
+		}
+		if exists {
+			return candidate, nil
+		}
+	}
+
+	return "", errors.New("could not detect base branch: no init.defaultBranch, no current branch, and neither 'main' nor 'master' exists locally; pass --base-branch or set init.defaultBranch")
+}
+
 // CurrentHEAD returns the full SHA of the current HEAD commit.
 func (m *Manager) CurrentHEAD(dir string) (string, error) {
 	out, err := m.git(dir, "rev-parse", "HEAD")

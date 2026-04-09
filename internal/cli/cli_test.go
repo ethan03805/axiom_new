@@ -44,6 +44,7 @@ func (n *noopGitService) CreateBranch(dir, name string) error                   
 func (n *noopGitService) CurrentHEAD(dir string) (string, error)                { return "abc123", nil }
 func (n *noopGitService) IsDirty(dir string) (bool, error)                      { return false, nil }
 func (n *noopGitService) ValidateClean(dir string) error                        { return nil }
+func (n *noopGitService) DetectBaseBranch(dir string) (string, error)            { return "main", nil }
 func (n *noopGitService) SetupWorkBranch(dir, baseBranch, workBranch string) error { return nil }
 func (n *noopGitService) SetupWorkBranchAllowDirty(dir, baseBranch, workBranch string) error {
 	return nil

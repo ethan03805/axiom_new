@@ -12,7 +12,7 @@ func TestRunAction_CreatesRun(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	err := runAction(application, proj.ID, "Build a web app", 5.0, false, buf)
+	err := runAction(application, proj.ID, "Build a web app", 5.0, false, "", buf)
 	if err != nil {
 		t.Fatalf("runAction: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestRunAction_UsesConfigBudget(t *testing.T) {
 	buf := new(bytes.Buffer)
 
 	// BudgetUSD=0 means use config default
-	err := runAction(application, proj.ID, "Build something", 0, false, buf)
+	err := runAction(application, proj.ID, "Build something", 0, false, "", buf)
 	if err != nil {
 		t.Fatalf("runAction: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestRunAction_CustomBudget(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	err := runAction(application, proj.ID, "Build something", 25.0, false, buf)
+	err := runAction(application, proj.ID, "Build something", 25.0, false, "", buf)
 	if err != nil {
 		t.Fatalf("runAction: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestRunAction_PersistsRun(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	err := runAction(application, proj.ID, "test prompt", 5.0, false, buf)
+	err := runAction(application, proj.ID, "test prompt", 5.0, false, "", buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,6 +274,14 @@ func TestRunCmd_LongDescriptionDocumentsAllowDirty(t *testing.T) {
 	}
 }
 
+func TestRunCmd_BaseBranchFlagRegistered(t *testing.T) {
+	verbose := false
+	cmd := RunCmd(&verbose)
+	if cmd.Flags().Lookup("base-branch") == nil {
+		t.Fatal("--base-branch flag should be registered on the run command")
+	}
+}
+
 func TestRunCmd_RequiresPromptArg(t *testing.T) {
 	verbose := false
 	cmd := RunCmd(&verbose)
@@ -294,7 +302,7 @@ func TestRunAction_EmitsEvent(t *testing.T) {
 	defer application.Engine.Bus().Unsubscribe(subID)
 
 	buf := new(bytes.Buffer)
-	if err := runAction(application, proj.ID, "test prompt", 5.0, false, buf); err != nil {
+	if err := runAction(application, proj.ID, "test prompt", 5.0, false, "", buf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -314,7 +322,7 @@ func TestRunAction_DefaultBaseBranch(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	if err := runAction(application, proj.ID, "test", 0, false, buf); err != nil {
+	if err := runAction(application, proj.ID, "test", 0, false, "", buf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -333,7 +341,7 @@ func TestRunAction_ErrorsOnExistingActiveRun(t *testing.T) {
 	buf := new(bytes.Buffer)
 
 	// Create run options - there is already an active run
-	err := runAction(application, "proj-test", "another prompt", 5.0, false, buf)
+	err := runAction(application, "proj-test", "another prompt", 5.0, false, "", buf)
 
 	// This should fail or create a new run depending on implementation.
 	// Per architecture, multiple runs are allowed but only one active.

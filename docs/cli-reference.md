@@ -157,7 +157,7 @@ ECOs allow controlled environmental changes during execution without modifying t
 Create a new project run in `draft_srs` status for external-orchestrator handoff. `axiom run` refuses to start on a dirty working tree (Architecture §28.2) and switches the repo onto `axiom/<slug>` before handing off to the orchestrator.
 
 ```bash
-axiom run "<prompt>" [--budget <usd>] [--allow-dirty]
+axiom run "<prompt>" [--budget <usd>] [--allow-dirty] [--base-branch <name>]
 ```
 
 **Flags:**
@@ -165,6 +165,7 @@ axiom run "<prompt>" [--budget <usd>] [--allow-dirty]
 |------|---------|-------------|
 | `--budget` | config value | Budget in USD |
 | `--allow-dirty` | `false` | Bypass the clean-working-tree check (recovery only — logs a loud `WARN` and routes through the recovery-mode work branch setup) |
+| `--base-branch` | _detected_ | Override the base branch the work branch is created from. When omitted, the engine calls `git.DetectBaseBranch` and resolves in priority order: `init.defaultBranch`, the currently checked-out branch, `main`, then `master`. See [Git Operations Reference § Base Branch Detection](git-operations.md#base-branch-detection). |
 
 **Example:**
 ```bash
@@ -182,7 +183,7 @@ Use `--allow-dirty` only for crash-recovery scenarios where resuming work on a b
 **Errors:**
 
 - `working tree has uncommitted changes` — commit or stash, or pass `--allow-dirty` for recovery.
-- `no inference provider available for configured orchestrator runtime: runtime "<name>" requires an openrouter API key` — the inference-plane startup health check (Issue 07 fix) refused to open the engine because the configured runtime requires a cloud provider that has not been configured. Set `[inference].openrouter_api_key` in `~/.axiom/config.toml` and retry. See [Getting Started § Set Your OpenRouter API Key Before `axiom run`](getting-started.md#set-your-openrouter-api-key-before-axiom-run).
+- `no inference provider available for configured orchestrator runtime: runtime "<name>" requires an openrouter API key` — the inference-plane startup health check (Issue 07 fix) refused to open the engine because the configured runtime requires a cloud provider that has not been configured. Run [`axiom setup`](#axiom-setup) for a guided fix, or set `[inference].openrouter_api_key` in `~/.axiom/config.toml` manually. See [Getting Started § Set Your OpenRouter API Key Before `axiom run`](getting-started.md#set-your-openrouter-api-key-before-axiom-run).
 
 ### `axiom pause`
 
@@ -455,6 +456,58 @@ Generated content includes the Axiom workflow, trust boundaries, request types, 
 See [Runtime Skill System Reference](runtime-skills.md) for the full artifact layout, regeneration rules, and runtime-specific enforcement behavior.
 
 ## Diagnostics Commands
+
+### `axiom setup`
+
+Guided first-run setup for OpenRouter, Docker, the default worker image, and BitNet. Unlike `axiom run` and `axiom tui`, `axiom setup` does not call `app.Open()`, so it works even when the inference plane startup health check would reject the current environment. It is the intended entry point when a fresh install produces errors such as `no inference provider available for configured orchestrator runtime`.
+
+```bash
+axiom setup [--non-interactive]
+```
+
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--non-interactive` | `false` | Report what would change without prompting. Useful for CI smoke checks and for confirming the current environment state before committing to interactive edits. |
+
+**What it does, in order:**
+
+1. **OpenRouter key** — reads the current global config (`~/.axiom/config.toml`). If `[inference].openrouter_api_key` is empty, prompts for a key and writes it under the `[inference]` section. If it's already set, prints a masked confirmation and moves on.
+2. **Docker daemon** — probes whether `docker info` is reachable. If not, prints a platform-specific remediation hint (Docker Desktop for Windows/macOS, package manager for Linux) and continues. A missing daemon does not block setup because downstream runtime work requires it anyway.
+3. **Default image** — checks whether `axiom-meeseeks-multi:latest` is present locally. If missing, prints the canonical build command (`docker build -t axiom-meeseeks-multi:latest -f docker/meeseeks-multi.Dockerfile docker`) and asks whether to run it now.
+4. **BitNet mode** — prompts for one of three supported operating modes: `disabled`, `manual` (you run the server), or `managed` (Axiom launches it). In managed mode, also prompts for `[bitnet].command` and `[bitnet].working_dir`.
+
+**Safe config writes.** `axiom setup` performs surgical line edits against `~/.axiom/config.toml` rather than round-tripping the full config struct. Only keys the user actively changed are touched; every other byte of the file is left intact. This intentionally avoids the Issue 09 / Issue 10 failure mode where a round-trip could write an empty project value that shadows a valid global value.
+
+**Example:**
+
+```bash
+$ axiom setup
+Axiom first-run setup
+---------------------
+Step 1: OpenRouter key
+  No OpenRouter key found in ~/.axiom/config.toml
+  Paste your OpenRouter API key (or press Enter to skip):
+  ...
+
+Step 2: Docker daemon
+  Docker daemon reachable.
+
+Step 3: Default worker image
+  Image 'axiom-meeseeks-multi:latest' is not present locally.
+  Run this now? (y/N): n
+
+Step 4: BitNet mode
+  Choose [1=disabled / 2=manual / 3=managed, Enter=keep current]:
+  ...
+
+Setup complete. Next:
+  1) axiom doctor
+  2) axiom init         (in a project directory)
+  3) axiom run "..."
+```
+
+After setup finishes, `axiom doctor` is the right next step to confirm the environment is healthy, then `axiom init` inside the target project, then `axiom run`.
 
 ### `axiom doctor`
 

@@ -13,6 +13,7 @@ import (
 func RunCmd(verbose *bool) *cobra.Command {
 	var budgetUSD float64
 	var allowDirty bool
+	var baseBranch string
 
 	cmd := &cobra.Command{
 		Use:   "run <prompt>",
@@ -20,7 +21,10 @@ func RunCmd(verbose *bool) *cobra.Command {
 		Long: "Start a new project: generate SRS, await approval, execute.\n\n" +
 			"By default axiom refuses to start on a dirty working tree (Architecture §28.2).\n" +
 			"Pass --allow-dirty to bypass this check for crash-recovery scenarios where\n" +
-			"resuming work on a branch with uncommitted state is intentional.",
+			"resuming work on a branch with uncommitted state is intentional.\n\n" +
+			"By default axiom detects the repository's base branch from local state\n" +
+			"(init.defaultBranch, current branch, then main/master). Pass --base-branch\n" +
+			"to override detection for repositories with unusual trunk names.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
@@ -34,21 +38,22 @@ func RunCmd(verbose *bool) *cobra.Command {
 				return err
 			}
 
-			return runAction(application, projectID, args[0], budgetUSD, allowDirty, cmd.OutOrStdout())
+			return runAction(application, projectID, args[0], budgetUSD, allowDirty, baseBranch, cmd.OutOrStdout())
 		},
 	}
 
 	cmd.Flags().Float64Var(&budgetUSD, "budget", 0, "budget in USD (defaults to config value)")
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "bypass the clean-working-tree check (recovery only)")
+	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch to branch from (default: auto-detect from repo)")
 	return cmd
 }
 
 // runAction starts a new project run via the engine's high-level StartRun entrypoint.
-func runAction(application *app.App, projectID, prompt string, budgetUSD float64, allowDirty bool, w io.Writer) error {
+func runAction(application *app.App, projectID, prompt string, budgetUSD float64, allowDirty bool, baseBranch string, w io.Writer) error {
 	run, err := application.Engine.StartRun(engine.StartRunOptions{
 		ProjectID:  projectID,
 		Prompt:     prompt,
-		BaseBranch: "main",
+		BaseBranch: baseBranch,
 		BudgetUSD:  budgetUSD,
 		Source:     "cli",
 		AllowDirty: allowDirty,
