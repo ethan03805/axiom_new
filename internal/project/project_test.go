@@ -3,7 +3,10 @@ package project
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/openaxiom/axiom/internal/config"
 )
 
 func TestInit(t *testing.T) {
@@ -58,6 +61,42 @@ func TestInit_AlreadyExists(t *testing.T) {
 	// Second init should fail
 	if err := Init(dir, "test"); err == nil {
 		t.Error("expected error for duplicate init")
+	}
+}
+
+func TestInit_WritesSparseProjectConfig(t *testing.T) {
+	dir := t.TempDir()
+	name := "My Test Project"
+	if err := Init(dir, name); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, ".axiom", "config.toml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile(config.toml): %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "[project]") {
+		t.Fatalf("config.toml should include a [project] table:\n%s", content)
+	}
+
+	cfg, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFile(config.toml): %v", err)
+	}
+	if cfg.Project.Name != name {
+		t.Fatalf("project name = %q, want %q", cfg.Project.Name, name)
+	}
+	if cfg.Project.Slug != "my-test-project" {
+		t.Fatalf("project slug = %q, want %q", cfg.Project.Slug, "my-test-project")
+	}
+	if strings.Contains(content, "openrouter_api_key") {
+		t.Fatalf("config.toml should not include openrouter_api_key on init:\n%s", content)
+	}
+	if strings.Contains(content, "[inference]") {
+		t.Fatalf("config.toml should not include an [inference] section on init:\n%s", content)
 	}
 }
 

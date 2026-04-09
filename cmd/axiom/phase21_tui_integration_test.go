@@ -113,3 +113,32 @@ func TestTUIPrompt_RefusesDirtyTree(t *testing.T) {
 		}
 	})
 }
+
+func TestTUIPlain_InheritsGlobalOpenRouterKeyAfterInit(t *testing.T) {
+	repoDir, err := testfixtures.Materialize("existing-go")
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(repoDir)) })
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	writeGlobalOpenRouterConfig(t, home, "sk-global-tui-key")
+
+	withWorkingDir(t, repoDir, func() {
+		verbose = false
+
+		initOut := executeCobra(t, initCmd(), "--name", "Fixture TUI Global")
+		if !strings.Contains(initOut, "Axiom project initialized") {
+			t.Fatalf("init output missing success message:\n%s", initOut)
+		}
+
+		tuiOut := executeCobra(t, cli.TUICmd(&verbose), "--plain")
+		if !strings.Contains(tuiOut, "Axiom") {
+			t.Fatalf("tui --plain output missing startup frame:\n%s", tuiOut)
+		}
+	})
+}

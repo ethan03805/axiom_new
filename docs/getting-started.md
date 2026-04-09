@@ -77,9 +77,17 @@ axiom init
 
 ## Configuration
 
-The generated `.axiom/config.toml` contains all configuration with architecture defaults. See [Configuration Reference](configuration.md) for details.
+`axiom init` writes a minimal `.axiom/config.toml` containing only the committed project identity:
 
-User-wide defaults and secrets such as the OpenRouter API key live in `~/.axiom/config.toml`. Optional managed BitNet launch settings also belong there when you want `axiom bitnet start` / `stop` to control a local server process.
+```toml
+[project]
+name = "my-project"
+slug = "my-project"
+```
+
+Architecture defaults are still applied at load time, and user-wide defaults and secrets such as the OpenRouter API key live in `~/.axiom/config.toml`. Optional managed BitNet launch settings also belong there when you want `axiom bitnet start` / `stop` to control a local server process.
+
+Add repo-local overrides to `.axiom/config.toml` only when you intentionally want that project to diverge from the global or built-in defaults. See [Configuration Reference](configuration.md) for the full supported schema.
 
 ### Set Your OpenRouter API Key Before `axiom run`
 

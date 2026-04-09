@@ -393,3 +393,23 @@ func tomlKey(field reflect.StructField) string {
 func Marshal(cfg *Config) ([]byte, error) {
 	return toml.Marshal(cfg)
 }
+
+type projectTemplate struct {
+	Project ProjectConfig `toml:"project"`
+}
+
+// MarshalProjectTemplate serializes the minimal project-scoped config that
+// `axiom init` writes into `.axiom/config.toml`.
+//
+// This template is intentionally allowlist-based: only committed project
+// identifiers are emitted on init. Runtime defaults still come from
+// config.Default during layered loading, and user/machine-scoped secrets stay
+// in `~/.axiom/config.toml`.
+func MarshalProjectTemplate(name, slug string) ([]byte, error) {
+	return toml.Marshal(projectTemplate{
+		Project: ProjectConfig{
+			Name: name,
+			Slug: slug,
+		},
+	})
+}

@@ -27,7 +27,7 @@ axiom init [flags]
 
 **What it does:**
 1. Creates the `.axiom/` directory structure
-2. Generates `config.toml` with architecture defaults
+2. Generates a minimal project-scoped `config.toml` containing `[project].name` and `[project].slug`
 3. Writes `.gitignore` for ephemeral runtime state
 4. Creates an empty `models.json`
 5. Creates and migrates the SQLite database
@@ -49,6 +49,8 @@ Next: run 'axiom run "<prompt>"' to create a run for your appointed external orc
 ```
 
 Current operating model: `axiom run` creates the run state, but a user-appointed external orchestrator must generate and submit the first SRS draft.
+
+The generated `.axiom/config.toml` is intentionally sparse. Runtime defaults are still applied by layered config loading, and user-machine secrets such as `inference.openrouter_api_key` stay in `~/.axiom/config.toml`.
 
 **Errors:**
 - Fails if `.axiom/` already exists (use a fresh directory)

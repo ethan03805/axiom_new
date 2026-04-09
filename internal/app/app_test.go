@@ -52,6 +52,27 @@ func writeProjectConfigOverride(t *testing.T, repoDir, name, apiKey string) {
 	}
 }
 
+func writeGlobalOpenRouterConfig(t *testing.T, home, apiKey string) {
+	t.Helper()
+
+	globalDir := filepath.Join(home, ".axiom")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(global .axiom): %v", err)
+	}
+
+	content := `[inference]
+openrouter_api_key = "` + apiKey + `"
+openrouter_base_url = "http://127.0.0.1:1"
+timeout_seconds = 1
+
+[bitnet]
+enabled = false
+`
+	if err := os.WriteFile(filepath.Join(globalDir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+}
+
 func TestOpenDiscoversProjectFromSubdirectoryAndRunsRecovery(t *testing.T) {
 	repoDir, err := testfixtures.Materialize("existing-go")
 	if err != nil {
@@ -240,6 +261,37 @@ func TestOpen_FailsFastWhenNoProviderConfigured(t *testing.T) {
 		// wording that would suggest a silent zero-value.
 		if strings.Contains(strings.ToLower(err.Error()), "nil") {
 			t.Fatalf("error message should be operator-friendly, not talk about nil: %v", err)
+		}
+	})
+}
+
+func TestOpen_UsesGlobalOpenRouterKeyWithFreshInitTemplate(t *testing.T) {
+	repoDir, err := testfixtures.Materialize("existing-go")
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(repoDir)) })
+
+	if err := project.Init(repoDir, "fixture-global-key"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	writeGlobalOpenRouterConfig(t, home, "sk-global-test-key")
+
+	withWorkingDir(t, repoDir, func() {
+		application, err := Open(slog.Default())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer application.Close()
+
+		if application.Config.Inference.OpenRouterAPIKey != "sk-global-test-key" {
+			t.Fatalf("openrouter_api_key = %q, want inherited global key", application.Config.Inference.OpenRouterAPIKey)
 		}
 	})
 }

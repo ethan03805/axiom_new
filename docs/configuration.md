@@ -7,7 +7,21 @@ Axiom uses TOML configuration files with a two-layer system:
 
 Project values override global values. If neither file exists, architecture defaults are used.
 
-## Full Configuration Schema
+## Generated Project Template
+
+A freshly initialized project starts with a sparse `.axiom/config.toml`:
+
+```toml
+[project]
+name = "my-project"
+slug = "my-project"
+```
+
+This is intentional. `axiom init` writes only committed project-scoped fields by default. User-machine settings and secrets such as `inference.openrouter_api_key` belong in `~/.axiom/config.toml`, and omitted project fields inherit from global config or built-in defaults.
+
+## Full Supported Schema
+
+The schema below shows every supported field after layering. `axiom init` does not emit every field into the project file.
 
 ```toml
 [project]
@@ -177,6 +191,9 @@ See [Operations & Diagnostics Reference](operations-diagnostics.md) for startup 
 
 Global config (`~/.axiom/config.toml`):
 ```toml
+[inference]
+openrouter_api_key = "sk-or-v1-..."
+
 [budget]
 max_usd = 50.00
 
@@ -195,6 +212,8 @@ max_usd = 20.00
 ```
 
 Result: budget is $20 (project overrides global), runtime is "claude-code" (inherited from global).
+
+The same inheritance rule applies to secrets and machine-local defaults: if the project file does not declare `inference.openrouter_api_key`, the global value remains in effect.
 
 ## Runtime Skill Regeneration
 

@@ -28,19 +28,11 @@ func patchConfigWithTestInferenceProvider(t *testing.T, repoDir string) {
 	t.Helper()
 
 	cfgPath := filepath.Join(repoDir, project.AxiomDir, project.ConfigFile)
-	existing, err := os.ReadFile(cfgPath)
+	existing, err := config.LoadFile(cfgPath)
 	if err != nil {
-		t.Fatalf("read config: %v", err)
+		t.Fatalf("load config: %v", err)
 	}
-	// Parse the existing (default) config so we preserve its project
-	// name / slug, then overlay the inference fields we care about.
-	var cfg config.Config
-	if err := unmarshalTOML(existing, &cfg); err != nil {
-		// Fall back to a fresh default if the project name is unknown
-		// to the caller; project.Init always writes a valid TOML so
-		// this path is a defensive no-op.
-		cfg = config.Default("fixture", "fixture")
-	}
+	cfg := config.Default(existing.Project.Name, existing.Project.Slug)
 	cfg.Inference.OpenRouterAPIKey = "sk-test-fake-key"
 	cfg.Inference.OpenRouterBase = "http://127.0.0.1:1"
 	cfg.Inference.TimeoutSeconds = 1
@@ -55,25 +47,25 @@ func patchConfigWithTestInferenceProvider(t *testing.T, repoDir string) {
 	}
 }
 
-// unmarshalTOML is a tiny adapter so the helper above can reuse the
-// config package's Load path without the full filesystem dance.
-func unmarshalTOML(data []byte, out *config.Config) error {
-	tmp, err := os.CreateTemp("", "axiom-cfg-*.toml")
-	if err != nil {
-		return err
+func writeGlobalOpenRouterConfig(t *testing.T, home, apiKey string) {
+	t.Helper()
+
+	globalDir := filepath.Join(home, ".axiom")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(global .axiom): %v", err)
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
+
+	content := `[inference]
+openrouter_api_key = "` + apiKey + `"
+openrouter_base_url = "http://127.0.0.1:1"
+timeout_seconds = 1
+
+[bitnet]
+enabled = false
+`
+	if err := os.WriteFile(filepath.Join(globalDir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write global config: %v", err)
 	}
-	tmp.Close()
-	loaded, err := config.LoadFile(tmp.Name())
-	if err != nil {
-		return err
-	}
-	*out = *loaded
-	return nil
 }
 
 func TestCLIInitRunStatusFlow_ExistingProjectFixture(t *testing.T) {
@@ -277,6 +269,35 @@ func TestCLIInitDefaultsNameFromGreenfieldDirectory(t *testing.T) {
 			t.Fatalf("config.toml not written: %v", err)
 		}
 		patchConfigWithTestInferenceProvider(t, repoDir)
+
+		statusOutput := executeCobra(t, statusCmd())
+		if !strings.Contains(statusOutput, "idle (no active run)") {
+			t.Fatalf("status output missing idle state:\n%s", statusOutput)
+		}
+	})
+}
+
+func TestCLIStatus_InheritsGlobalOpenRouterKeyAfterInit(t *testing.T) {
+	repoDir, err := testfixtures.Materialize("existing-go")
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(repoDir)) })
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	writeGlobalOpenRouterConfig(t, home, "sk-global-cli-key")
+
+	withWorkingDir(t, repoDir, func() {
+		verbose = false
+
+		output := executeCobra(t, initCmd(), "--name", "Fixture Global Config")
+		if !strings.Contains(output, "Axiom project initialized") {
+			t.Fatalf("init output missing success message:\n%s", output)
+		}
 
 		statusOutput := executeCobra(t, statusCmd())
 		if !strings.Contains(statusOutput, "idle (no active run)") {

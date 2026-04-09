@@ -44,7 +44,7 @@ Every generated runtime artifact includes the same Axiom contract:
 - Test authorship separation requirements.
 - Error handling and escalation rules.
 
-The generated text also includes config-derived values from `.axiom/config.toml`, including:
+The generated text also includes config-derived values from the effective loaded configuration (project overrides layered on top of global config and built-in defaults), including:
 
 - API base URL from `[api].port`
 - Budget ceiling and warning threshold from `[budget]`
@@ -100,13 +100,14 @@ That approval gating is part of the deterministic compliance strategy: OpenCode 
 
 ## Regeneration Rules
 
-Re-run `axiom skill generate` after changing `.axiom/config.toml`, especially:
+Re-run `axiom skill generate` after changing effective configuration inputs, especially:
 
 - `[orchestrator].runtime`
 - `[api].port`
 - `[budget].max_usd`
 - `[budget].warn_at_percent`
 - `[git].branch_prefix`
+- any global defaults in `~/.axiom/config.toml` that you expect generated artifacts to reflect
 
 The generator is config-aware, but it is not currently file-watch-driven. Regeneration is an explicit command, not an automatic background process.
 
@@ -123,7 +124,7 @@ Treat generated files as managed outputs. If you need to refresh them, rerun the
 ## Recommended Workflow
 
 1. Initialize the project with `axiom init`.
-2. Set the desired orchestrator runtime in `.axiom/config.toml`.
+2. Set the desired orchestrator runtime in `.axiom/config.toml` or `~/.axiom/config.toml`, depending on whether you want a project-local override or a user-wide default.
 3. Generate the matching runtime artifacts with `axiom skill generate --runtime <runtime>`.
 4. If using external orchestration, generate an API token and start the API server.
 5. Point the runtime at the repository root so it loads the generated instruction files.

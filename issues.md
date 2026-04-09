@@ -516,15 +516,3 @@ Detailed issue:
 
 - `issues/15/15-p2-no-guided-first-run-setup-flow.md`
 
-## Overall recommendation
-
-The next milestone should not be "more packages." It should be one vertical slice that a non-technical user can actually complete:
-
-1. `axiom init`
-2. `axiom run "<prompt>"`
-3. SRS draft generation
-4. user approve/reject path
-5. at least one task executing through container -> validation -> review -> merge
-6. safe git branch handling
-
-Until that slice works, the codebase is better described as "architecture-aligned subsystems with strong package tests" than as a production-ready local-first orchestration product.

@@ -50,9 +50,9 @@ func Init(dir, name string) error {
 	// Generate slug from name
 	slug := Slugify(name)
 
-	// Write default config
-	cfg := config.Default(name, slug)
-	cfgData, err := config.Marshal(&cfg)
+	// Write the sparse project config template. Runtime defaults and
+	// user-machine-scoped settings are layered in by config.Load.
+	cfgData, err := config.MarshalProjectTemplate(name, slug)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
