@@ -481,11 +481,18 @@ The command works outside a project. In that case, project-specific cache checks
 ```text
 Phase 19 Doctor Report
 [PASS] docker: Docker daemon reachable
-[WARN] bitnet: BitNet is configured but not currently running
+[WARN] bitnet: BitNet is enabled in manual mode; start the server manually or configure [bitnet].command
 [PASS] network: Provider endpoint reachable
 [PASS] resources: Configured resource pressure is within local CPU capacity
 [PASS] cache: Project cache directories and image baseline are ready
 [PASS] security: Secret scanner patterns loaded successfully
+```
+
+If BitNet is enabled with a managed command but the server is not
+currently running, the expected line is:
+
+```text
+[WARN] bitnet: BitNet is configured but not currently running
 ```
 
 If BitNet is disabled by layered config, the expected line is:

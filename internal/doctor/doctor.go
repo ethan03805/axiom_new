@@ -61,11 +61,11 @@ type HTTPDoer interface {
 
 // Options configures a doctor service.
 type Options struct {
-	Config       *config.Config
-	ProjectRoot  string
-	Docker       DockerChecker
-	BitNetStatus func(context.Context) bitnet.ServiceStatus
-	HTTPClient   HTTPDoer
+	Config        *config.Config
+	ProjectRoot   string
+	Docker        DockerChecker
+	BitNetStatus  func(context.Context) bitnet.ServiceStatus
+	HTTPClient    HTTPDoer
 	ResourceProbe ResourceProbe
 }
 
@@ -146,7 +146,11 @@ func (s *Service) checkBitNet(ctx context.Context) CheckResult {
 		return CheckResult{Name: "bitnet", Status: StatusPass, Summary: "BitNet server is reachable"}
 	}
 	if s.cfg.BitNet.Command == "" {
-		return CheckResult{Name: "bitnet", Status: StatusFail, Summary: "BitNet is enabled but no start command is configured"}
+		return CheckResult{
+			Name:    "bitnet",
+			Status:  StatusWarn,
+			Summary: "BitNet is enabled in manual mode; start the server manually or configure [bitnet].command",
+		}
 	}
 	if s.cfg.BitNet.WorkingDir != "" {
 		if info, err := os.Stat(s.cfg.BitNet.WorkingDir); err != nil || !info.IsDir() {

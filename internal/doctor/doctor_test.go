@@ -85,11 +85,95 @@ func TestServiceRun_ReportsDependencyFailures(t *testing.T) {
 	if findCheck(t, report, "docker").Status != StatusFail {
 		t.Fatal("expected docker availability check to fail")
 	}
-	if findCheck(t, report, "bitnet").Status != StatusFail {
-		t.Fatal("expected bitnet availability check to fail when enabled but unavailable")
+	if findCheck(t, report, "bitnet").Status != StatusWarn {
+		t.Fatal("expected bitnet check to warn when enabled in manual mode")
 	}
 	if findCheck(t, report, "network").Status != StatusPass {
 		t.Fatal("expected unauthorized provider probe to still count as reachable")
+	}
+}
+
+func TestServiceCheckBitNet_StatusMatrix(t *testing.T) {
+	root := t.TempDir()
+
+	tests := []struct {
+		name       string
+		cfg        func() config.Config
+		status     bitnet.ServiceStatus
+		wantStatus Status
+		wantBody   string
+	}{
+		{
+			name: "disabled",
+			cfg: func() config.Config {
+				cfg := config.Default("doctor", "doctor")
+				cfg.BitNet.Enabled = false
+				return cfg
+			},
+			wantStatus: StatusSkip,
+			wantBody:   "BitNet disabled in config",
+		},
+		{
+			name: "running",
+			cfg: func() config.Config {
+				return config.Default("doctor", "doctor")
+			},
+			status:     bitnet.ServiceStatus{Running: true},
+			wantStatus: StatusPass,
+			wantBody:   "BitNet server is reachable",
+		},
+		{
+			name: "manual mode not running",
+			cfg: func() config.Config {
+				cfg := config.Default("doctor", "doctor")
+				cfg.BitNet.Command = ""
+				return cfg
+			},
+			wantStatus: StatusWarn,
+			wantBody:   "BitNet is enabled in manual mode; start the server manually or configure [bitnet].command",
+		},
+		{
+			name: "managed mode not running",
+			cfg: func() config.Config {
+				cfg := config.Default("doctor", "doctor")
+				cfg.BitNet.Command = "python"
+				cfg.BitNet.WorkingDir = root
+				return cfg
+			},
+			wantStatus: StatusWarn,
+			wantBody:   "BitNet is configured but not currently running",
+		},
+		{
+			name: "managed mode invalid working directory",
+			cfg: func() config.Config {
+				cfg := config.Default("doctor", "doctor")
+				cfg.BitNet.Command = "python"
+				cfg.BitNet.WorkingDir = filepath.Join(root, "missing")
+				return cfg
+			},
+			wantStatus: StatusFail,
+			wantBody:   "BitNet working directory is not available",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg()
+			svc := New(Options{
+				Config: &cfg,
+				BitNetStatus: func(context.Context) bitnet.ServiceStatus {
+					return tc.status
+				},
+			})
+
+			got := svc.checkBitNet(context.Background())
+			if got.Status != tc.wantStatus {
+				t.Fatalf("Status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Summary != tc.wantBody {
+				t.Fatalf("Summary = %q, want %q", got.Summary, tc.wantBody)
+			}
+		})
 	}
 }
 

@@ -40,8 +40,23 @@ axiom doctor
 
 `axiom doctor` checks Docker, BitNet configuration/availability, provider reachability, local CPU pressure, cache readiness, and secret-scanner initialization. It works both inside and outside a project.
 
-If your layered config disables BitNet, the BitNet line is reported as a
-`SKIP`, not a failure. Example:
+The BitNet line distinguishes supported states rather than treating
+every non-running server as broken:
+
+- disabled config -> `SKIP`
+- manual mode, not running -> `WARN`
+- managed mode, not running -> `WARN`
+- reachable server -> `PASS`
+
+Examples:
+
+```text
+[WARN] bitnet: BitNet is enabled in manual mode; start the server manually or configure [bitnet].command
+```
+
+```text
+[WARN] bitnet: BitNet is configured but not currently running
+```
 
 ```text
 [SKIP] bitnet: BitNet disabled in config

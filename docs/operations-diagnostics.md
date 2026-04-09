@@ -15,6 +15,18 @@ Example output:
 ```text
 Phase 19 Doctor Report
 [PASS] docker: Docker daemon reachable
+[WARN] bitnet: BitNet is enabled in manual mode; start the server manually or configure [bitnet].command
+[PASS] network: Provider endpoint reachable
+[PASS] resources: Configured resource pressure is within local CPU capacity
+[PASS] cache: Project cache directories and image baseline are ready
+[PASS] security: Secret scanner patterns loaded successfully
+```
+
+Managed-mode example:
+
+```text
+Phase 19 Doctor Report
+[PASS] docker: Docker daemon reachable
 [WARN] bitnet: BitNet is configured but not currently running
 [PASS] network: Provider endpoint reachable
 [PASS] resources: Configured resource pressure is within local CPU capacity
@@ -49,6 +61,13 @@ The current implementation runs these checks in order:
 - `WARN` - usable, but degraded or not ideal
 - `FAIL` - action is required
 - `SKIP` - check is not applicable in the current context
+
+For the BitNet check specifically:
+
+- `SKIP` - BitNet is disabled by layered config
+- `WARN` - BitNet is enabled but not currently reachable, either in manual mode or as a managed-but-stopped service
+- `FAIL` - the managed BitNet configuration itself is invalid, such as a missing `working_dir`
+- `PASS` - the BitNet server is reachable
 
 ### Project vs Non-Project Mode
 
