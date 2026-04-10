@@ -4,10 +4,114 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/openaxiom/axiom/internal/engine"
 	"github.com/openaxiom/axiom/internal/state"
 )
+
+// redactedPlaceholder is the value substituted for any field detected as a secret.
+const redactedPlaceholder = "[REDACTED]"
+
+// secretKeyPatterns is the list of case-insensitive substrings that mark a JSON
+// field name as containing a secret. Matches are evaluated against the lower-cased
+// field key. Per Architecture Section 19.5: secrets must never cross the
+// HTTP/WS response boundary in plaintext.
+var secretKeyPatterns = []string{
+	"api_key",
+	"apikey",
+	"openrouter_api_key",
+	"openrouterapikey",
+	"_secret",
+	"_token",
+	"password",
+	"passphrase",
+}
+
+// secretValuePattern matches string values that look like Axiom or OpenRouter
+// secret tokens (e.g. `sk-or-v1-...`, `axm_sk_...`).
+var secretValuePattern = regexp.MustCompile(`^(sk-[A-Za-z0-9_-]+|axm_sk_[A-Za-z0-9_-]+)`)
+
+// isSecretKey reports whether the given JSON field name should be treated as
+// a secret based on substring matching against secretKeyPatterns.
+func isSecretKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, pat := range secretKeyPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactSecretsInJSONTree walks an arbitrary JSON-decoded value (map/slice/scalar)
+// and replaces any secret-bearing string values with redactedPlaceholder.
+// Maps are recursed by key (so the field name participates in the secret check);
+// slices and scalar strings are checked against secretValuePattern only.
+func redactSecretsInJSONTree(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			if isSecretKey(k) {
+				if _, ok := child.(string); ok {
+					val[k] = redactedPlaceholder
+					continue
+				}
+			}
+			val[k] = redactSecretsInJSONTree(child)
+		}
+		return val
+	case []any:
+		for i, child := range val {
+			val[i] = redactSecretsInJSONTree(child)
+		}
+		return val
+	case string:
+		if secretValuePattern.MatchString(val) {
+			return redactedPlaceholder
+		}
+		return val
+	default:
+		return v
+	}
+}
+
+// redactConfigSnapshot parses a JSON config snapshot, redacts any secret-bearing
+// fields, and returns the re-serialized snapshot. If the input is empty or fails
+// to parse, the original string is returned unchanged.
+func redactConfigSnapshot(snapshot string) string {
+	if snapshot == "" {
+		return snapshot
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(snapshot), &parsed); err != nil {
+		return snapshot
+	}
+	parsed = redactSecretsInJSONTree(parsed)
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return snapshot
+	}
+	return string(out)
+}
+
+// redactSecretsInRunStatus returns a copy of the projection with secrets in the
+// embedded ProjectRun.ConfigSnapshot replaced by redactedPlaceholder. The
+// original projection is left untouched so internal callers still see real
+// credentials.
+func redactSecretsInRunStatus(status *engine.RunStatusProjection) *engine.RunStatusProjection {
+	if status == nil {
+		return nil
+	}
+	clone := *status
+	if clone.Run != nil {
+		runCopy := *clone.Run
+		runCopy.ConfigSnapshot = redactConfigSnapshot(runCopy.ConfigSnapshot)
+		clone.Run = &runCopy
+	}
+	return &clone
+}
 
 // Handlers holds the REST endpoint handlers for the Axiom API server.
 // Per Architecture Section 24.2.
@@ -63,7 +167,7 @@ func (h *Handlers) HandleGetStatus(w http.ResponseWriter, r *http.Request, proje
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, status)
+	writeJSON(w, http.StatusOK, redactSecretsInRunStatus(status))
 }
 
 // HandleGetTasks returns the task tree for a project's active run.

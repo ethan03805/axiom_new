@@ -67,6 +67,7 @@ Authorization: Bearer axm_sk_<token>
 |--------|----------|-------|---------|
 | `POST` | `/api/v1/projects` | full-control | Create a new project |
 | `POST` | `/api/v1/projects/:id/run` | full-control | Create a run for external-orchestrator handoff |
+| `POST` | `/api/v1/projects/:id/srs/submit` | full-control | Submit an SRS draft from an external orchestrator |
 | `POST` | `/api/v1/projects/:id/srs/approve` | full-control | Approve the generated SRS |
 | `POST` | `/api/v1/projects/:id/srs/reject` | full-control | Reject SRS with feedback |
 | `POST` | `/api/v1/projects/:id/eco/approve` | full-control | Approve an ECO |
@@ -86,6 +87,34 @@ Authorization: Bearer axm_sk_<token>
 | `GET` | `/health` | none | Health check (no auth required) |
 
 Current runtime note: `POST /api/v1/projects/:id/run` creates run metadata only. Clients should not expect automatic SRS generation from the server; the appointed external orchestrator must handle the first draft.
+
+### Submit SRS Draft
+
+```
+POST /api/v1/projects/:id/srs/submit
+```
+
+Used by an external orchestrator to hand a finished SRS draft back to Axiom for human approval. Pairs with `srs/approve` and `srs/reject`. The active run for the project must already be in a state that accepts an SRS submission (typically the initial `draft_srs` phase). `axiom srs show` directs runtimes here when they need to materialize the draft.
+
+- **Auth:** Bearer token, `full-control` scope
+- **Request body:**
+
+  ```json
+  { "content": "<full SRS markdown>" }
+  ```
+
+- **Success response (`200 OK`):**
+
+  ```json
+  {
+      "status": "awaiting_srs_approval",
+      "run_id": "<run-id>"
+  }
+  ```
+
+- **Error responses:**
+  - `400 Bad Request` — body is malformed JSON, `content` is empty, or the engine rejects the draft (wrong run phase, validation failure)
+  - `404 Not Found` — no active run exists for the project
 
 ## WebSocket Endpoints
 
@@ -127,9 +156,24 @@ Authenticated control channel for external orchestrator action requests. Require
 }
 ```
 
-Supported request types: `submit_srs`, `submit_eco`, `create_task`, `create_task_batch`, `spawn_meeseeks`, `spawn_reviewer`, `spawn_sub_orchestrator`, `approve_output`, `reject_output`, `query_index`, `query_status`, `query_budget`, `request_inference`.
+Supported request types:
 
-Current runtime note: long-running control requests such as `submit_srs` are part of the intended external orchestration contract, but the live server still only acknowledges those requests rather than dispatching them end to end.
+| Verb | Status | Payload | Result |
+|------|--------|---------|--------|
+| `query_status` | wired | — | Run status projection (with secrets redacted). |
+| `query_budget` | wired | — | `{max_usd, spent_usd, remaining_usd}` |
+| `query_index` | wired | `{name, kind}` | Semantic index lookup results. |
+| `submit_srs` | wired | `{content: "<markdown>"}` | `{status: "awaiting_srs_approval", run_id}` |
+| `submit_eco` | wired | `{category, affected_refs, description, proposed_change}` (also accepts the legacy `{reason, rationale, proposed_changes}` shape) | `{eco_id, status: "proposed"}` |
+| `create_task` | wired | `{spec: {objective, context_tier, files, constraints, acceptance_criteria, interface_contract, output_format}}` | `{task_id, status: "queued"}` |
+| `create_task_batch` | wired | `{tasks: [spec, …]}` (each element is a bare spec or `{"spec": {…}}` envelope) | `{task_ids, count}` |
+| `approve_output` | wired | `{task_id, attempt_id}` | `{status: "enqueued"}` — attempt enters the merge queue. |
+| `reject_output` | wired | `{task_id, attempt_id, reason}` | `{status: "rejected"}` — attempt is marked failed. |
+| `spawn_meeseeks`, `spawn_reviewer`, `spawn_sub_orchestrator`, `request_inference` | **not yet implemented** | — | Returns `status: "rejected"` with a clear "not yet implemented on the engine" error. Spawning is driven by the scheduler/executor loop today; direct inference is served via the REST `/api/v1/inference/*` surface. |
+
+**Response redaction.** The `query_status` result is passed through the same secret-redaction helper used by the REST `/status` endpoint — any field matching `api_key`, `apikey`, `_secret`, `_token`, `password`, or `passphrase`, and any value matching `^sk-...` / `^axm_sk_...`, is replaced with `"[REDACTED]"` before serialization. Read-only tokens cannot exfiltrate the user's OpenRouter key through this endpoint.
+
+**Unknown verbs** return `{status: "rejected", error: "unknown request type: <verb>"}`.
 
 ## Tunnel
 

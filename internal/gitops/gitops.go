@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -61,6 +62,47 @@ func (m *Manager) CurrentBranch(dir string) (string, error) {
 		return "", fmt.Errorf("getting current branch: %w", err)
 	}
 	return out, nil
+}
+
+// IsRepo reports whether dir is inside a git working tree.
+// It shells out to `git -C <dir> rev-parse --is-inside-work-tree` and treats
+// any non-"true" response (missing .git, bare repo, permission error) as
+// "not a repo". A non-existent directory returns an error.
+func (m *Manager) IsRepo(dir string) (bool, error) {
+	if _, err := os.Stat(dir); err != nil {
+		return false, fmt.Errorf("checking directory %s: %w", dir, err)
+	}
+
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// rev-parse exits non-zero outside a work tree; treat as "not a repo".
+		return false, nil
+	}
+	return strings.TrimSpace(string(out)) == "true", nil
+}
+
+// InitRepo initializes a brand-new git repository in dir with "main" as the
+// default branch. It first tries `git init -b main`; if that fails (older git
+// versions predate the -b flag), it falls back to `git init` followed by
+// `git branch -M main`. This mirrors the pattern used by
+// internal/testfixtures/testfixtures.go.
+//
+// Callers should verify the directory is not already a repo via IsRepo before
+// calling this — re-initializing an existing repo is allowed by git but
+// rarely what Axiom wants.
+func (m *Manager) InitRepo(dir string) error {
+	if _, err := m.git(dir, "init", "-b", "main"); err != nil {
+		// Fall back for git < 2.28 which lacks -b.
+		if _, fallbackErr := m.git(dir, "init"); fallbackErr != nil {
+			return fmt.Errorf("initializing git repo: %w", err)
+		}
+		if _, err := m.git(dir, "branch", "-M", "main"); err != nil {
+			return fmt.Errorf("renaming default branch to main: %w", err)
+		}
+	}
+	m.log.Info("initialized git repository", "dir", dir)
+	return nil
 }
 
 // CreateBranch creates a new branch at the current HEAD without checking it out.

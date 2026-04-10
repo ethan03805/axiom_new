@@ -39,6 +39,24 @@ func NewGenerator(root string, cfg *config.Config) *Generator {
 	return &Generator{root: root, cfg: cfg}
 }
 
+// Warnings returns runtime-specific post-generation warnings that CLI
+// callers should surface to the user. These are not errors — they are
+// caveats the user needs to know about to make the generated artifacts
+// actually take effect.
+func Warnings(runtime Runtime) []string {
+	switch runtime {
+	case RuntimeClaudeCode:
+		return []string{
+			"The guard hook is active only in NEW Claude Code sessions.",
+			"Claude Code reads .claude/settings.json at session start,",
+			"so changes made mid-session take effect only after you",
+			"restart Claude Code.",
+		}
+	default:
+		return nil
+	}
+}
+
 // Generate writes the artifacts for a given runtime and returns the files written.
 func (g *Generator) Generate(runtime Runtime) ([]Artifact, error) {
 	if g == nil || g.cfg == nil {

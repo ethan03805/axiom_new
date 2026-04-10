@@ -15,6 +15,7 @@ func Commands(verbose *bool) []*cobra.Command {
 		ResumeCmd(verbose),
 		CancelCmd(verbose),
 		SRSCmd(verbose),
+		TaskCmd(verbose),
 		ExportCmd(verbose),
 		ModelsCmd(verbose),
 		BitnetCmd(verbose),

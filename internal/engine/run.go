@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,32 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// ActiveRunExistsError is returned by StartRun when the target project
+// already has an in-flight run (draft_srs, awaiting_srs_approval, active,
+// or paused). Callers must not silently clobber the existing run — the
+// TUI, CLI, and API surfaces all treat this as a confirmation gate and
+// require the operator to explicitly opt into replacement via
+// StartRunOptions.Force.
+type ActiveRunExistsError struct {
+	RunID  string
+	Status state.RunStatus
+}
+
+func (e *ActiveRunExistsError) Error() string {
+	return fmt.Sprintf("a run already exists for this project: %s (%s)", e.RunID, e.Status)
+}
+
+// ErrActiveRunExists is a sentinel wrapped by ActiveRunExistsError so
+// callers can use errors.Is for status-agnostic checks while still
+// retrieving the ID+status via errors.As.
+var ErrActiveRunExists = errors.New("active run exists")
+
+// Is allows errors.Is(err, ErrActiveRunExists) to match concrete
+// ActiveRunExistsError values.
+func (e *ActiveRunExistsError) Is(target error) bool {
+	return target == ErrActiveRunExists
+}
 
 // StartRunOptions configures a new project run via the high-level StartRun entrypoint.
 // This is the intended public API for CLI, API, and WebSocket surfaces.
@@ -29,6 +56,14 @@ type StartRunOptions struct {
 	// clean tree by default; this flag is the documented escape hatch and
 	// must trigger a loud WARN log when used.
 	AllowDirty bool
+	// Force bypasses the "existing active run" guard. By default StartRun
+	// refuses to create a new run when the project already has an
+	// in-flight run (draft_srs, awaiting_srs_approval, active, paused) to
+	// prevent a stray prompt from silently clobbering orchestrator work.
+	// Setting Force skips that guard and logs a loud WARN for audit
+	// traceability. Operators using this flag are accepting responsibility
+	// for the replacement.
+	Force bool
 }
 
 // RunOptions configures a new project run (low-level helper).
@@ -50,6 +85,44 @@ func (e *Engine) StartRun(opts StartRunOptions) (*state.ProjectRun, error) {
 	source := opts.Source
 	if source == "" {
 		source = "cli"
+	}
+
+	// Refuse to clobber an existing in-flight run. The guard is the single
+	// most important defence against a stray bootstrap-mode prompt
+	// destroying in-progress orchestrator work — a typo in the TUI or CLI
+	// used to silently replace the active run's draft files. Operators who
+	// genuinely want to restart must pass Force=true (loud WARN) or cancel
+	// the existing run first.
+	if existing, err := e.db.GetActiveRun(opts.ProjectID); err == nil && existing != nil {
+		if !opts.Force {
+			e.log.Warn("StartRun refused: active run already exists",
+				"project_id", opts.ProjectID,
+				"existing_run_id", existing.ID,
+				"existing_status", existing.Status,
+				"source", source,
+				"hint", "pass Force=true to replace, or cancel the run first")
+			return nil, &ActiveRunExistsError{RunID: existing.ID, Status: existing.Status}
+		}
+		e.log.Warn("StartRun replacing active run via Force override",
+			"project_id", opts.ProjectID,
+			"existing_run_id", existing.ID,
+			"existing_status", existing.Status,
+			"source", source,
+			"hint", "previous run was abandoned at the operator's explicit request")
+		// Transition the prior run to cancelled so the audit trail is
+		// accurate and GetActiveRun does not return two concurrent
+		// in-flight runs. Best-effort: if the transition fails, log a
+		// warning and continue — the new run is more important than
+		// cleaning up the old one, and `axiom export` will still surface
+		// the orphan.
+		if cancelErr := e.db.UpdateRunStatus(existing.ID, state.RunCancelled); cancelErr != nil {
+			e.log.Warn("failed to mark prior run as cancelled during Force replace",
+				"existing_run_id", existing.ID,
+				"error", cancelErr,
+				"hint", "run will appear as orphaned in axiom export")
+		}
+	} else if err != nil && !errors.Is(err, state.ErrNotFound) {
+		return nil, fmt.Errorf("checking for existing active run: %w", err)
 	}
 
 	// Validate workspace: working tree must be clean. AllowDirty is the

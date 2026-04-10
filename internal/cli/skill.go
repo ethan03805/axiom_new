@@ -47,7 +47,8 @@ func SkillCmd(verbose *bool) *cobra.Command {
 
 func skillGenerateAction(application *app.App, runtime string, w io.Writer) error {
 	gen := skill.NewGenerator(application.ProjectRoot, application.Config)
-	artifacts, err := gen.Generate(skill.Runtime(runtime))
+	rt := skill.Runtime(runtime)
+	artifacts, err := gen.Generate(rt)
 	if err != nil {
 		return err
 	}
@@ -55,6 +56,20 @@ func skillGenerateAction(application *app.App, runtime string, w io.Writer) erro
 	fmt.Fprintf(w, "Phase 17: Generated %d skill artifact(s) for %s.\n", len(artifacts), runtime)
 	for _, artifact := range artifacts {
 		fmt.Fprintf(w, "Generated: %s\n", artifact.Path)
+	}
+
+	warnings := skill.Warnings(rt)
+	if len(warnings) > 0 {
+		fmt.Fprintln(w)
+		// First warning line gets the warning marker; subsequent lines are
+		// indented to keep the block visually cohesive.
+		for i, line := range warnings {
+			if i == 0 {
+				fmt.Fprintf(w, "WARNING: %s\n", line)
+			} else {
+				fmt.Fprintf(w, "         %s\n", line)
+			}
+		}
 	}
 	return nil
 }

@@ -173,7 +173,13 @@ func srsSubmitCmd(verbose *bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   "submit <file>",
 		Short: "Submit an SRS draft from a file",
-		Args:  cobra.ExactArgs(1),
+		Long: `Submit an SRS draft from a file.
+
+If <file> is "-", the SRS content is read from stdin instead of from disk.
+The stdin form is intended for orchestrators operating under restrictive
+hook policies (for example, Claude Code with the Axiom guard hook) that
+cannot legitimately write the draft to the filesystem first.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			application, err := openApp(verbose)
 			if err != nil {
@@ -191,19 +197,44 @@ func srsSubmitCmd(verbose *bool) *cobra.Command {
 				return err
 			}
 
-			content, err := os.ReadFile(args[0])
-			if err != nil {
-				return fmt.Errorf("reading SRS file: %w", err)
-			}
-
-			if err := application.Engine.SubmitSRS(run.ID, string(content)); err != nil {
-				return fmt.Errorf("submitting SRS: %w", err)
-			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "SRS submitted. Run %s is now awaiting approval.\n", run.ID)
-			fmt.Fprintf(cmd.OutOrStdout(), "Review:  axiom srs show\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "Approve: axiom srs approve\n")
-			return nil
+			return srsSubmitAction(application, run.ID, args[0], cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
+}
+
+// srsSubmitAction performs the SRS submission given a pre-resolved run ID.
+// It is extracted from the cobra RunE so tests can exercise the stdin path
+// without wiring through openApp.
+func srsSubmitAction(application *app.App, runID, source string, stdin io.Reader, w io.Writer) error {
+	content, err := readSRSSource(stdin, source)
+	if err != nil {
+		return err
+	}
+
+	if err := application.Engine.SubmitSRS(runID, content); err != nil {
+		return fmt.Errorf("submitting SRS: %w", err)
+	}
+
+	fmt.Fprintf(w, "SRS submitted. Run %s is now awaiting approval.\n", runID)
+	fmt.Fprintf(w, "Review:  axiom srs show\n")
+	fmt.Fprintf(w, "Approve: axiom srs approve\n")
+	return nil
+}
+
+// readSRSSource loads SRS draft content either from disk or from the given
+// reader when source is "-". This keeps the orchestrator-side workflow
+// compatible with hook policies that forbid direct filesystem writes.
+func readSRSSource(stdin io.Reader, source string) (string, error) {
+	if source == "-" {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return "", fmt.Errorf("reading SRS from stdin: %w", err)
+		}
+		return string(data), nil
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return "", fmt.Errorf("reading SRS file: %w", err)
+	}
+	return string(data), nil
 }

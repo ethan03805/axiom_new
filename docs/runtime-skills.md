@@ -98,6 +98,26 @@ Generated files:
 
 That approval gating is part of the deterministic compliance strategy: OpenCode should not be able to silently bypass Axiom by editing files or running arbitrary shell commands.
 
+## Hook Activation Timing
+
+The Claude Code guard hook only activates in **new** Claude Code sessions. Claude Code reads `.claude/settings.json` once at session start, so running `axiom skill generate --runtime claude-code` mid-session does not enable the hook for the in-progress session. For the hook to take effect:
+
+1. Run `axiom skill generate --runtime claude-code` to write `.claude/settings.json` and `.claude/hooks/axiom-guard.py`.
+2. Restart Claude Code (close the session and open a new one).
+3. Verify the guard hook is active on the first tool call in the new session. Direct `Edit`, `Write`, `MultiEdit`, and non-`axiom` `Bash` invocations should be refused.
+
+`axiom skill generate --runtime claude-code` prints an explicit warning about this timing to reduce the chance of a silent "I thought the hook was on" failure mode.
+
+### Submitting an SRS under a restrictive hook policy
+
+The guard hook blocks `Write`, which makes the natural "author SRS draft to a file, then `axiom srs submit <file>`" workflow impossible inside a locked-down Claude Code session. The deterministic in-band path is:
+
+```bash
+axiom srs submit -
+```
+
+When the file argument is exactly `-`, `axiom srs submit` reads the SRS content from stdin and forwards it to the engine without ever touching the filesystem. Orchestrators under the guard hook should pipe the generated SRS into `axiom srs submit -` instead of attempting to stage a draft file first.
+
 ## Regeneration Rules
 
 Re-run `axiom skill generate` after changing effective configuration inputs, especially:

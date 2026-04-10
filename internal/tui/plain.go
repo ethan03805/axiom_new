@@ -20,16 +20,41 @@ type PlainRenderer struct {
 	cfg     *config.Config
 	projID  string
 	log     *slog.Logger
+	// source is the start_source label written to project_runs when
+	// RunOnce creates a run. Defaults to "tui" for historical reasons
+	// (the `axiom tui --prompt` path used to be the only caller) but
+	// callers that share this renderer via `axiom session list` /
+	// `axiom session export` must not let a stray RunOnce misattribute
+	// their source. SetSource lets the constructor-less session code
+	// leave the renderer in a safe "source not applicable" state.
+	source string
 }
 
-// NewPlainRenderer creates a plain-text renderer.
+// NewPlainRenderer creates a plain-text renderer with start_source="tui".
+// This is the historical constructor used by the `axiom tui --prompt`
+// path and by the `axiom session` subcommands. Session callers never
+// invoke RunOnce, so the "tui" default is harmless for them; callers
+// that DO invoke RunOnce for a non-TUI origin must use
+// NewPlainRendererWithSource instead.
 func NewPlainRenderer(eng *engine.Engine, mgr *session.Manager, cfg *config.Config, projectID string, log *slog.Logger) *PlainRenderer {
+	return NewPlainRendererWithSource(eng, mgr, cfg, projectID, log, "tui")
+}
+
+// NewPlainRendererWithSource creates a plain-text renderer that tags
+// any runs it creates via RunOnce with the given start_source label.
+// This is the intended constructor for non-TUI callers that reuse the
+// renderer's line-oriented output surface (e.g. CLI fallback paths).
+func NewPlainRendererWithSource(eng *engine.Engine, mgr *session.Manager, cfg *config.Config, projectID string, log *slog.Logger, source string) *PlainRenderer {
+	if source == "" {
+		source = "tui"
+	}
 	return &PlainRenderer{
 		engine:  eng,
 		session: mgr,
 		cfg:     cfg,
 		projID:  projectID,
 		log:     log,
+		source:  source,
 	}
 }
 
@@ -251,12 +276,13 @@ func (r *PlainRenderer) RunStatus(w io.Writer) error {
 // result line to w.
 //
 // This is the scripted-stdin entrypoint for the Issue 08 integration
-// test. It calls Engine.StartRun directly (bypassing the full Bubble Tea
-// model) so CI environments without a TTY can still exercise the TUI's
-// new write path. The method deliberately mirrors Model.submitInput's
-// bootstrap-mode behavior to keep the two surfaces observable as
-// equivalent: clean-tree check, StartRun with Source="tui", success /
-// failure line written to w.
+// test. It calls Engine.StartRun directly (bypassing the full Bubble
+// Tea model) so CI environments without a TTY can still exercise the
+// TUI's new write path. The method honours the renderer's configured
+// start_source (defaults to "tui"); callers that invoke RunOnce from
+// a non-TUI origin must construct the renderer via
+// NewPlainRendererWithSource so project_runs.start_source is recorded
+// accurately.
 func (r *PlainRenderer) RunOnce(w io.Writer, prompt string) error {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
@@ -269,11 +295,16 @@ func (r *PlainRenderer) RunOnce(w io.Writer, prompt string) error {
 		return fmt.Errorf("plain-mode run submission requires bootstrap mode (was %s)", mode)
 	}
 
+	source := r.source
+	if source == "" {
+		source = "tui"
+	}
+
 	run, err := r.engine.StartRun(engine.StartRunOptions{
 		ProjectID:  r.projID,
 		Prompt:     prompt,
 		BaseBranch: "main",
-		Source:     "tui",
+		Source:     source,
 	})
 	if err != nil {
 		fmt.Fprintf(w, "Failed to start run: %v\n", err)

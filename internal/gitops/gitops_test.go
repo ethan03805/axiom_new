@@ -1007,6 +1007,85 @@ func TestCommitFormat_ArchitectureCompliance(t *testing.T) {
 }
 
 // =====================================================================
+// IsRepo / InitRepo (Issue #2: axiom init auto-initializes git)
+// =====================================================================
+
+func TestIsRepo_DetectsExistingRepo(t *testing.T) {
+	dir := initTestRepo(t)
+	mgr := testManager()
+
+	ok, err := mgr.IsRepo(dir)
+	if err != nil {
+		t.Fatalf("IsRepo: %v", err)
+	}
+	if !ok {
+		t.Errorf("IsRepo on initialized repo: got false, want true")
+	}
+}
+
+func TestIsRepo_RejectsNonRepo(t *testing.T) {
+	dir := t.TempDir()
+	mgr := testManager()
+
+	ok, err := mgr.IsRepo(dir)
+	if err != nil {
+		t.Fatalf("IsRepo: %v", err)
+	}
+	if ok {
+		t.Errorf("IsRepo on plain temp dir: got true, want false")
+	}
+}
+
+func TestIsRepo_NonExistentDirectoryErrors(t *testing.T) {
+	mgr := testManager()
+
+	_, err := mgr.IsRepo(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Errorf("IsRepo on non-existent dir: expected error, got nil")
+	}
+}
+
+func TestInitRepo_CreatesFreshRepo(t *testing.T) {
+	dir := t.TempDir()
+	mgr := testManager()
+
+	// Precondition: no .git directory.
+	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("expected no .git before InitRepo, stat err = %v", err)
+	}
+
+	if err := mgr.InitRepo(dir); err != nil {
+		t.Fatalf("InitRepo: %v", err)
+	}
+
+	// .git should now exist.
+	info, err := os.Stat(filepath.Join(dir, ".git"))
+	if err != nil {
+		t.Fatalf(".git missing after InitRepo: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf(".git exists but is not a directory")
+	}
+
+	// Default branch should be "main". A freshly initialized empty repo
+	// has an unborn HEAD that still reports the configured branch name
+	// via symbolic-ref.
+	out := gitRun(t, dir, "symbolic-ref", "--short", "HEAD")
+	if out != "main" {
+		t.Errorf("default branch after InitRepo: got %q, want %q", out, "main")
+	}
+
+	// And IsRepo should now see it as a repo.
+	ok, err := mgr.IsRepo(dir)
+	if err != nil {
+		t.Fatalf("IsRepo after InitRepo: %v", err)
+	}
+	if !ok {
+		t.Errorf("IsRepo after InitRepo: got false, want true")
+	}
+}
+
+// =====================================================================
 // No push/remote operations (design constraint from Section 23.4)
 // This is verified by the fact that Manager has no Push, Fetch, Pull,
 // or remote-related methods. A compilation test is implicit.

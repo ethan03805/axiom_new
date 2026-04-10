@@ -23,22 +23,24 @@ axiom init [flags]
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--name` | `-n` | directory name | Project name |
+| `--no-git` |  | `false` | Skip the automatic `git init` when the directory is not already a git repository. Use this only when you plan to set up git manually or are intentionally operating outside version control for testing — downstream commands like `axiom run` will fail without a git work tree. |
 | `--verbose` | `-v` | false | Enable verbose logging |
 
 **What it does:**
-1. Creates the `.axiom/` directory structure
-2. Generates a minimal project-scoped `config.toml` containing `[project].name` and `[project].slug`
-3. Writes `.gitignore` for ephemeral runtime state
-4. Creates an empty `models.json`
-5. Creates and migrates the SQLite database
-6. Creates the project record in the database
-7. Validates the generated configuration
+1. Detects whether the current directory is already a git repository. If not (and `--no-git` was not passed), automatically runs `git init -b main` so downstream commands that require a clean git work tree succeed out of the box. Fixes [GitHub issue #2](../issues.md).
+2. Creates the `.axiom/` directory structure
+3. Generates a minimal project-scoped `config.toml` containing `[project].name` and `[project].slug`
+4. Writes `.gitignore` for ephemeral runtime state
+5. Creates an empty `models.json`
+6. Creates and migrates the SQLite database
+7. Creates the project record in the database
+8. Validates the generated configuration
 
 **Example:**
 ```bash
 $ mkdir my-app && cd my-app
-$ git init
 $ axiom init --name "My Application"
+Initialized empty git repository in /home/user/my-app
 Axiom project initialized in /home/user/my-app
   Project: My Application
   Slug:    my-application
@@ -157,7 +159,7 @@ ECOs allow controlled environmental changes during execution without modifying t
 Create a new project run in `draft_srs` status for external-orchestrator handoff. `axiom run` refuses to start on a dirty working tree (Architecture §28.2) and switches the repo onto `axiom/<slug>` before handing off to the orchestrator.
 
 ```bash
-axiom run "<prompt>" [--budget <usd>] [--allow-dirty] [--base-branch <name>]
+axiom run "<prompt>" [--budget <usd>] [--allow-dirty] [--force] [--base-branch <name>]
 ```
 
 **Flags:**
@@ -165,6 +167,7 @@ axiom run "<prompt>" [--budget <usd>] [--allow-dirty] [--base-branch <name>]
 |------|---------|-------------|
 | `--budget` | config value | Budget in USD |
 | `--allow-dirty` | `false` | Bypass the clean-working-tree check (recovery only — logs a loud `WARN` and routes through the recovery-mode work branch setup) |
+| `--force` | `false` | Replace an existing in-flight run (`draft_srs`/`awaiting_srs_approval`/`active`/`paused`). By default `axiom run` refuses to clobber an active run so a stray prompt cannot silently destroy orchestrator work. `--force` marks the prior run as `cancelled` in the audit trail before creating the new run. Use `axiom export` to inspect orphaned state after a replacement. |
 | `--base-branch` | _detected_ | Override the base branch the work branch is created from. When omitted, the engine calls `git.DetectBaseBranch` and resolves in priority order: `init.defaultBranch`, the currently checked-out branch, `main`, then `master`. See [Git Operations Reference § Base Branch Detection](git-operations.md#base-branch-detection). |
 
 **Example:**
@@ -183,6 +186,7 @@ Use `--allow-dirty` only for crash-recovery scenarios where resuming work on a b
 **Errors:**
 
 - `working tree has uncommitted changes` — commit or stash, or pass `--allow-dirty` for recovery.
+- `a run already exists for this project: <id> (<status>). Cancel it with 'axiom cancel' or re-run with --force to replace it` — the project already has an in-flight run. Decide whether to resume (`axiom resume` if paused), cancel (`axiom cancel`), or replace (`--force`). Programmatically the engine returns an `engine.ActiveRunExistsError` that carries the existing run's `RunID` and `Status`.
 - `no inference provider available for configured orchestrator runtime: runtime "<name>" requires an openrouter API key` — the inference-plane startup health check (Issue 07 fix) refused to open the engine because the configured runtime requires a cloud provider that has not been configured. Run [`axiom setup`](#axiom-setup) for a guided fix, or set `[inference].openrouter_api_key` in `~/.axiom/config.toml` manually. See [Getting Started § Set Your OpenRouter API Key Before `axiom run`](getting-started.md#set-your-openrouter-api-key-before-axiom-run).
 
 ### `axiom pause`
@@ -210,7 +214,41 @@ Container and git cleanup are **fail-open**: if either step fails, the cancel st
 
 ### `axiom export`
 
-Export project state as human-readable JSON to stdout. Includes project info, active run, and tasks.
+Export project state as human-readable JSON to stdout. Includes project info and tasks.
+
+The export emits a top-level `runs: []` array containing **every** run ever created for the project — not just the current active one. Runs in a terminal state (`cancelled`, `completed`, `error`) are flagged with `orphaned: true` so operators can audit clobbered or abandoned drafts. The legacy top-level `run` field (pointing at the active run, if any) is preserved for backward compatibility with existing scripts.
+
+### `axiom task create`
+
+Create a new task on the project's active run via the engine's task dispatch path. This is the CLI wrapper for the `create_task` control verb (Architecture §8.6).
+
+```bash
+axiom task create --objective "<text>" [--description "<text>"] [--context-tier <tier>] \
+  [--files <path>] [--constraint <text>] [--acceptance <text>] [--output-format <fmt>]
+```
+
+**Flags:**
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--objective` | _required_ | Task objective (one line) |
+| `--description` | empty | Longer task description |
+| `--context-tier` | `file` | Context tier: `symbol`, `file`, `package`, `repo_map`, `indexed` |
+| `--files` | _empty_ | Target file path (repeatable) |
+| `--constraint` | _empty_ | Task constraint (repeatable) |
+| `--acceptance` | _empty_ | Acceptance criterion (repeatable) |
+| `--output-format` | `patch` | Output format: `patch` or `files` |
+
+### `axiom task list`
+
+List all tasks in the active run with ID, status, and title.
+
+### `axiom task approve <task-id> <attempt-id>`
+
+Approve a task attempt's output and enqueue it into the merge queue. Wraps the `approve_output` control verb.
+
+### `axiom task reject <task-id> <attempt-id> --reason "..."`
+
+Reject a task attempt with feedback. Wraps the `reject_output` control verb.
 
 ### `axiom models refresh`
 

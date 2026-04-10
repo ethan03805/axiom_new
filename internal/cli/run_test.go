@@ -12,7 +12,7 @@ func TestRunAction_CreatesRun(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	err := runAction(application, proj.ID, "Build a web app", 5.0, false, "", buf)
+	err := runAction(application, proj.ID, "Build a web app", 5.0, false, false, "", buf)
 	if err != nil {
 		t.Fatalf("runAction: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestRunAction_UsesConfigBudget(t *testing.T) {
 	buf := new(bytes.Buffer)
 
 	// BudgetUSD=0 means use config default
-	err := runAction(application, proj.ID, "Build something", 0, false, "", buf)
+	err := runAction(application, proj.ID, "Build something", 0, false, false, "", buf)
 	if err != nil {
 		t.Fatalf("runAction: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestRunAction_CustomBudget(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	err := runAction(application, proj.ID, "Build something", 25.0, false, "", buf)
+	err := runAction(application, proj.ID, "Build something", 25.0, false, false, "", buf)
 	if err != nil {
 		t.Fatalf("runAction: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestRunAction_PersistsRun(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	err := runAction(application, proj.ID, "test prompt", 5.0, false, "", buf)
+	err := runAction(application, proj.ID, "test prompt", 5.0, false, false, "", buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestRunAction_EmitsEvent(t *testing.T) {
 	defer application.Engine.Bus().Unsubscribe(subID)
 
 	buf := new(bytes.Buffer)
-	if err := runAction(application, proj.ID, "test prompt", 5.0, false, "", buf); err != nil {
+	if err := runAction(application, proj.ID, "test prompt", 5.0, false, false, "", buf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -322,7 +322,7 @@ func TestRunAction_DefaultBaseBranch(t *testing.T) {
 	application, proj := testAppWithProject(t)
 	buf := new(bytes.Buffer)
 
-	if err := runAction(application, proj.ID, "test", 0, false, "", buf); err != nil {
+	if err := runAction(application, proj.ID, "test", 0, false, false, "", buf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -335,17 +335,72 @@ func TestRunAction_DefaultBaseBranch(t *testing.T) {
 	}
 }
 
-// Ensure error handling for duplicate active runs.
+// Ensure error handling for duplicate active runs. After the GitHub #1
+// fix, StartRun refuses to clobber an existing in-flight run unless the
+// operator passes --force. Without --force the CLI must surface a clear
+// error that names the existing run ID; with --force it must replace the
+// prior run and create a new active run.
 func TestRunAction_ErrorsOnExistingActiveRun(t *testing.T) {
-	application, _, _ := testAppWithActiveRun(t)
+	application, _, existing := testAppWithActiveRun(t)
 	buf := new(bytes.Buffer)
 
-	// Create run options - there is already an active run
-	err := runAction(application, "proj-test", "another prompt", 5.0, false, "", buf)
+	err := runAction(application, "proj-test", "another prompt", 5.0, false, false, "", buf)
+	if err == nil {
+		t.Fatal("expected error when an active run already exists and --force is not set")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), existing.ID) {
+		t.Errorf("error should include existing run ID %q, got: %v", existing.ID, err)
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error should advise --force, got: %v", err)
+	}
+}
 
-	// This should fail or create a new run depending on implementation.
-	// Per architecture, multiple runs are allowed but only one active.
-	// The engine.CreateRun doesn't check for existing active runs,
-	// so this test documents the behavior.
-	_ = err
+// TestRunAction_ForceReplacesActiveRun verifies the --force escape
+// hatch: passing force=true lets the operator replace an in-flight run
+// with a fresh one. The new run must be visible as the active run.
+func TestRunAction_ForceReplacesActiveRun(t *testing.T) {
+	application, _, existing := testAppWithActiveRun(t)
+	buf := new(bytes.Buffer)
+
+	err := runAction(application, "proj-test", "replacement prompt", 5.0, false, true, "", buf)
+	if err != nil {
+		t.Fatalf("runAction with force=true should succeed: %v", err)
+	}
+
+	run, err := application.DB.GetActiveRun("proj-test")
+	if err != nil {
+		t.Fatalf("expected an active run after force replace: %v", err)
+	}
+	if run.ID == existing.ID {
+		t.Errorf("expected a new run after force replace, but got the old run %q", run.ID)
+	}
+	if run.InitialPrompt != "replacement prompt" {
+		t.Errorf("new run prompt = %q, want %q", run.InitialPrompt, "replacement prompt")
+	}
+}
+
+// TestRunAction_StartSourceIsCLI verifies that a run started via the
+// CLI's runAction path records start_source="cli". This is the
+// regression guard for the Issue 06 / start_source mislabelling bug
+// where CLI runs previously flowed through a TUI path that hardcoded
+// "tui" on the StartRunOptions.
+func TestRunAction_StartSourceIsCLI(t *testing.T) {
+	application, proj := testAppWithProject(t)
+	buf := new(bytes.Buffer)
+
+	if err := runAction(application, proj.ID, "cli-sourced prompt", 5.0, false, false, "", buf); err != nil {
+		t.Fatalf("runAction: %v", err)
+	}
+
+	run, err := application.DB.GetActiveRun(proj.ID)
+	if err != nil {
+		t.Fatalf("expected active run: %v", err)
+	}
+	if run.StartSource != "cli" {
+		t.Errorf("start_source = %q, want cli", run.StartSource)
+	}
 }

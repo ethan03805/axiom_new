@@ -77,6 +77,17 @@ ctx, err := srs.BuildBootstrapContext(projectRoot, isGreenfield)
 // ctx.RepoMap — file listing for existing projects (empty for greenfield)
 ```
 
+### Submitting an SRS Draft
+
+External orchestrators submit drafts through one of three channels:
+
+- **CLI, file-based:** `axiom srs submit <path-to-file>` — reads the markdown from disk and calls `Engine.SubmitSRS`.
+- **CLI, stdin:** `axiom srs submit -` — reads the SRS content from stdin. This is the in-band path for orchestrators running under restrictive hook policies (e.g. the `axiom-guard.py` Claude Code hook, which forbids `Write` tool calls). Nothing touches disk. Example: `echo "$SRS_MARKDOWN" | axiom srs submit -`.
+- **REST API:** `POST /api/v1/projects/:id/srs/submit` with JSON body `{"content": "<markdown>"}`. See [API Server Reference § Submit SRS Draft](api-server.md#submit-srs-draft).
+- **Control WebSocket:** Send `{"type":"submit_srs","payload":{"content":"..."}}` on `ws://host/ws/projects/:id/control`.
+
+All four channels route through the same `Engine.SubmitSRS` method, so validation, persistence, and events are identical.
+
 ### SRS Draft Persistence
 
 Pending SRS drafts are persisted to the filesystem at `.axiom/srs-draft-<run-id>.md`. This allows:

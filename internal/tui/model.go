@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -99,7 +100,64 @@ type Model struct {
 	// handler returns so the command is dispatched exactly once.
 	pendingCmd tea.Cmd
 
+	// pendingShellLikePrompt buffers a bootstrap-mode prompt that looks
+	// like a shell-form axiom command (e.g. "srs show"). The TUI warns
+	// the operator that they may have meant to type "/srs show" and
+	// waits for a second Enter to confirm treating it as a project
+	// prompt. The second submit clears this field and proceeds to
+	// StartRun as usual.
+	pendingShellLikePrompt string
+
+	// pendingNewRunConfirm is set when /new has been issued while an
+	// active run exists. The operator must re-issue /new "<prompt>"
+	// to confirm replacement; the second invocation passes Force=true
+	// to StartRun. This two-step gate prevents a single /new from
+	// silently clobbering orchestrator work.
+	pendingNewRunConfirm bool
+
 	ready bool
+}
+
+// shellLikeCommands is the set of prompt first-words that look like
+// bare shell-form invocations of the `axiom` CLI. When bootstrap-mode
+// input starts with one of these followed by whitespace, submitInput
+// shows a "did you mean /<command>?" hint on the first submit and
+// requires a second Enter to confirm.
+var shellLikeCommands = map[string]struct{}{
+	"srs":     {},
+	"status":  {},
+	"export":  {},
+	"task":    {},
+	"tasks":   {},
+	"run":     {},
+	"cancel":  {},
+	"pause":   {},
+	"resume":  {},
+	"eco":     {},
+	"budget":  {},
+	"tokens":  {},
+	"session": {},
+	"diff":    {},
+	"help":    {},
+}
+
+// looksLikeShellCommand returns true if s begins with a known axiom
+// subcommand followed by whitespace (or is exactly the subcommand). The
+// check is case-insensitive and only matches the first whitespace-
+// delimited token so longer prompts like "srs looks great" still
+// trigger the hint while phrases like "srsly implement" do not.
+func looksLikeShellCommand(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+	// Split on the first whitespace character.
+	first := trimmed
+	if idx := strings.IndexAny(trimmed, " \t"); idx >= 0 {
+		first = trimmed[:idx]
+	}
+	_, ok := shellLikeCommands[strings.ToLower(first)]
+	return ok
 }
 
 // NewModel creates a new TUI model. The model subscribes to engine events
@@ -171,6 +229,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case runStartFailedMsg:
+		// Distinguish "active run already exists" from generic
+		// StartRun failures. The former is a confirmation gate — the
+		// operator must explicitly use /new to replace the prior run
+		// — and we surface the existing run's ID and status so the
+		// operator can make an informed choice.
+		var activeErr *engine.ActiveRunExistsError
+		if errors.As(msg.err, &activeErr) {
+			m.appendTranscript("system", "system_card",
+				fmt.Sprintf(
+					"A run already exists (%s, %s). "+
+						"Use /new to confirm replacement, or /resume to continue it. "+
+						"The prior run's draft files remain on disk — use 'axiom export' to audit before replacing.",
+					activeErr.RunID, activeErr.Status))
+			return m, nil
+		}
 		m.appendTranscript("system", "system_card",
 			fmt.Sprintf("Failed to start run: %v. Commit or stash changes and try again.", msg.err))
 		return m, nil
@@ -453,6 +526,26 @@ func (m *Model) submitInput(input string) tea.Cmd {
 	// which made the TUI misleading for non-technical operators (Issue 08).
 	switch m.mode {
 	case state.SessionBootstrap:
+		// Guard against bare shell-form commands. A user who has been
+		// typing `axiom srs show` on the CLI will naturally drop the
+		// slash when moving into the TUI. The first submit shows a
+		// "did you mean /<cmd>?" hint and buffers the prompt; the
+		// second Enter treats the same text as a project prompt.
+		if m.pendingShellLikePrompt == "" && looksLikeShellCommand(input) {
+			first := strings.Fields(input)[0]
+			m.pendingShellLikePrompt = input
+			m.appendTranscript("system", "system_card",
+				fmt.Sprintf(
+					"Hmm, %q looks like a shell command. Did you mean /%s? "+
+						"Press Enter again to treat it as a project prompt, "+
+						"or type /%s to run the command.",
+					input, first, first))
+			return nil
+		}
+		// A second Enter on the same text confirms the bootstrap
+		// prompt. Clear the buffer so subsequent inputs reset the
+		// guard.
+		m.pendingShellLikePrompt = ""
 		return m.startRunFromPrompt(input)
 	case state.SessionApproval:
 		m.appendTranscript("system", "system_card",
@@ -478,12 +571,22 @@ func (m *Model) submitInput(input string) tea.Cmd {
 // the TUI must NOT expose an --allow-dirty bypass — dirty-tree recovery
 // remains a deliberately inconvenient CLI-only escape hatch (Issue 06).
 func (m *Model) startRunFromPrompt(prompt string) tea.Cmd {
+	return m.startRunFromPromptWithForce(prompt, false)
+}
+
+// startRunFromPromptWithForce is the Force-aware variant used by the
+// /new confirmation gate. When force is true, StartRun will replace
+// any existing in-flight run rather than returning
+// ActiveRunExistsError. Bare bootstrap-mode prompts always pass
+// force=false so a stray keystroke can never clobber an active run.
+func (m *Model) startRunFromPromptWithForce(prompt string, force bool) tea.Cmd {
 	return func() tea.Msg {
 		run, err := m.engine.StartRun(engine.StartRunOptions{
 			ProjectID:  m.projectID,
 			Prompt:     prompt,
 			BaseBranch: "main",
 			Source:     "tui",
+			Force:      force,
 		})
 		if err != nil {
 			return runStartFailedMsg{err: err}
@@ -765,12 +868,22 @@ func (m *Model) cmdSRS() string {
 //     their prompt on the next line. This keeps the dual-form UX that
 //     some operators will expect (type /new first, then the prompt).
 //
-// If a run is already in progress, /new is refused. The error text names
-// /cancel explicitly so operators know exactly what to do next.
+// If a run is already in progress, /new requires an explicit two-step
+// confirmation (first /new arms the replacement gate, second /new with
+// a prompt actually passes Force=true to StartRun). This protects
+// in-flight orchestrator work from stray keystrokes.
 func (m *Model) cmdNewRun(cmd string, args []string) string {
-	if m.mode != state.SessionBootstrap {
-		return "A run is already in progress; use /cancel first to start a new one."
+	inProgress := m.mode != state.SessionBootstrap
+
+	// First-touch confirmation gate. A stray /new while a run is in
+	// progress arms the gate; the next /new with a prompt actually
+	// replaces the run.
+	if inProgress && !m.pendingNewRunConfirm {
+		m.pendingNewRunConfirm = true
+		return "A run is already in progress. Re-issue /new \"<prompt>\" to confirm replacement, " +
+			"or use /cancel to abandon it first. Use 'axiom export' to audit the prior run's state before replacing."
 	}
+
 	if len(args) == 0 {
 		return "Type your prompt below and press Enter, or use /new \"<prompt>\" to submit inline."
 	}
@@ -787,7 +900,9 @@ func (m *Model) cmdNewRun(cmd string, args []string) string {
 	if m.sess != nil {
 		_ = m.session.RecordInput(m.projectID, m.sess.ID, "prompt", prompt)
 	}
-	m.pendingCmd = m.startRunFromPrompt(prompt)
+	force := inProgress && m.pendingNewRunConfirm
+	m.pendingNewRunConfirm = false
+	m.pendingCmd = m.startRunFromPromptWithForce(prompt, force)
 	return ""
 }
 

@@ -374,6 +374,100 @@ func TestStartRun_AllowDirtyBypassesValidateClean(t *testing.T) {
 	}
 }
 
+// TestStartRun_RefusesWhenActiveRunExists verifies the GitHub #1 fix:
+// if the project already has an in-flight run (draft_srs / awaiting /
+// active / paused), StartRun must refuse the second StartRun instead
+// of silently clobbering the prior run's state. The refusal must
+// surface as an ActiveRunExistsError carrying the existing run's ID
+// and status.
+func TestStartRun_RefusesWhenActiveRunExists(t *testing.T) {
+	e := newTestEngine(t)
+	projectID := seedProject(t, e, "refuse-clobber")
+
+	first, err := e.StartRun(StartRunOptions{
+		ProjectID: projectID,
+		Prompt:    "first prompt",
+		Source:    "cli",
+	})
+	if err != nil {
+		t.Fatalf("first StartRun: %v", err)
+	}
+
+	_, err = e.StartRun(StartRunOptions{
+		ProjectID: projectID,
+		Prompt:    "second prompt",
+		Source:    "tui",
+	})
+	if err == nil {
+		t.Fatal("expected StartRun to refuse second call with an active run")
+	}
+	if !errors.Is(err, ErrActiveRunExists) {
+		t.Errorf("expected ErrActiveRunExists, got %T: %v", err, err)
+	}
+	var activeErr *ActiveRunExistsError
+	if !errors.As(err, &activeErr) {
+		t.Fatalf("expected *ActiveRunExistsError, got %T", err)
+	}
+	if activeErr.RunID != first.ID {
+		t.Errorf("ActiveRunExistsError.RunID = %q, want %q", activeErr.RunID, first.ID)
+	}
+	if activeErr.Status != state.RunDraftSRS {
+		t.Errorf("ActiveRunExistsError.Status = %q, want draft_srs", activeErr.Status)
+	}
+
+	// The first run's metadata must be intact — the second call must not
+	// have mutated the DB state.
+	reread, err := e.db.GetRun(first.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if reread.InitialPrompt != "first prompt" {
+		t.Errorf("first run's prompt was clobbered: got %q", reread.InitialPrompt)
+	}
+}
+
+// TestStartRun_ForceReplacesActiveRun verifies that Force=true is the
+// documented escape hatch: it bypasses the ActiveRunExistsError guard
+// and allows a new run to be created over the prior one. The prior
+// run's draft state is left on disk (audit trail); the new run becomes
+// the active run.
+func TestStartRun_ForceReplacesActiveRun(t *testing.T) {
+	e := newTestEngine(t)
+	projectID := seedProject(t, e, "force-replace")
+
+	first, err := e.StartRun(StartRunOptions{
+		ProjectID: projectID,
+		Prompt:    "first prompt",
+		Source:    "cli",
+	})
+	if err != nil {
+		t.Fatalf("first StartRun: %v", err)
+	}
+
+	second, err := e.StartRun(StartRunOptions{
+		ProjectID: projectID,
+		Prompt:    "replacement prompt",
+		Source:    "cli",
+		Force:     true,
+	})
+	if err != nil {
+		t.Fatalf("StartRun with Force=true should succeed: %v", err)
+	}
+	if second.ID == first.ID {
+		t.Error("expected a new run ID after Force replace")
+	}
+	if second.InitialPrompt != "replacement prompt" {
+		t.Errorf("new run prompt = %q, want replacement prompt", second.InitialPrompt)
+	}
+
+	// The first run still exists as an orphan for audit trail purposes.
+	// GetActiveRun returns the most recent; both should still be in the
+	// runs table (neither has been deleted).
+	if _, err := e.db.GetRun(first.ID); err != nil {
+		t.Errorf("first run should still be queryable for audit trail, got: %v", err)
+	}
+}
+
 // TestStartRun_RefusesDirtyTreeByDefault verifies that without AllowDirty,
 // a dirty working tree blocks the run.
 func TestStartRun_RefusesDirtyTreeByDefault(t *testing.T) {

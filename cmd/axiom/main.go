@@ -9,6 +9,7 @@ import (
 	"github.com/openaxiom/axiom/internal/app"
 	"github.com/openaxiom/axiom/internal/cli"
 	"github.com/openaxiom/axiom/internal/config"
+	"github.com/openaxiom/axiom/internal/gitops"
 	"github.com/openaxiom/axiom/internal/project"
 	"github.com/openaxiom/axiom/internal/state"
 	"github.com/openaxiom/axiom/internal/version"
@@ -55,10 +56,18 @@ func versionCmd() *cobra.Command {
 
 func initCmd() *cobra.Command {
 	var name string
+	var noGit bool
 
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize a new Axiom project in the current directory",
+		Long: `Initialize a new Axiom project in the current directory.
+
+If the directory is not already a git repository, 'axiom init' will run
+'git init -b main' automatically so downstream commands like 'axiom run'
+(which require a clean git work tree) succeed out of the box. Pass
+--no-git to skip the auto-init step if you want to set up git manually
+or are intentionally operating outside of version control for testing.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
 			log := app.NewLogger(verbose)
@@ -74,6 +83,28 @@ func initCmd() *cobra.Command {
 			}
 
 			log.Info("initializing axiom project", "dir", cwd, "name", name)
+
+			// Ensure cwd is a git repo before handing off to project.Init,
+			// so that downstream commands (axiom run, ValidateClean,
+			// SetupWorkBranch) don't fail on a missing .git directory.
+			// Users can opt out with --no-git.
+			gitMgr := gitops.New(log)
+			isRepo, repoErr := gitMgr.IsRepo(cwd)
+			if repoErr != nil {
+				return fmt.Errorf("checking git repo status: %w", repoErr)
+			}
+			switch {
+			case isRepo:
+				fmt.Fprintf(out, "Git repository detected: %s\n", cwd)
+			case noGit:
+				fmt.Fprintf(out, "Warning: %s is not a git repository and --no-git was set.\n", cwd)
+				fmt.Fprintln(out, "         Downstream commands like 'axiom run' will fail until you run 'git init' manually.")
+			default:
+				if err := gitMgr.InitRepo(cwd); err != nil {
+					return fmt.Errorf("auto-initializing git repo: %w", err)
+				}
+				fmt.Fprintf(out, "Initialized empty git repository in %s\n", cwd)
+			}
 
 			if err := project.Init(cwd, name); err != nil {
 				return err
@@ -125,6 +156,7 @@ func initCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&name, "name", "n", "", "project name (defaults to directory name)")
+	cmd.Flags().BoolVar(&noGit, "no-git", false, "skip automatic 'git init' when the directory is not a git repository")
 	return cmd
 }
 

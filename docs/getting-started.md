@@ -181,9 +181,10 @@ If you omit `--name`, the directory name is used:
 
 ```bash
 mkdir my-app && cd my-app
-git init
 axiom init
 # Project name defaults to "my-app", slug to "my-app"
+# 'axiom init' runs `git init -b main` automatically if the directory
+# is not already a git repository. Pass --no-git to opt out.
 ```
 
 ## Configuration

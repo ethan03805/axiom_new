@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -13,6 +14,7 @@ import (
 func RunCmd(verbose *bool) *cobra.Command {
 	var budgetUSD float64
 	var allowDirty bool
+	var force bool
 	var baseBranch string
 
 	cmd := &cobra.Command{
@@ -22,6 +24,10 @@ func RunCmd(verbose *bool) *cobra.Command {
 			"By default axiom refuses to start on a dirty working tree (Architecture §28.2).\n" +
 			"Pass --allow-dirty to bypass this check for crash-recovery scenarios where\n" +
 			"resuming work on a branch with uncommitted state is intentional.\n\n" +
+			"By default axiom refuses to start a new run when the project already has\n" +
+			"an in-flight run (draft_srs, awaiting_srs_approval, active, or paused).\n" +
+			"Pass --force to replace the existing run. The previous run's draft files\n" +
+			"remain on disk; use 'axiom export' to recover orphaned state.\n\n" +
 			"By default axiom detects the repository's base branch from local state\n" +
 			"(init.defaultBranch, current branch, then main/master). Pass --base-branch\n" +
 			"to override detection for repositories with unusual trunk names.",
@@ -38,18 +44,19 @@ func RunCmd(verbose *bool) *cobra.Command {
 				return err
 			}
 
-			return runAction(application, projectID, args[0], budgetUSD, allowDirty, baseBranch, cmd.OutOrStdout())
+			return runAction(application, projectID, args[0], budgetUSD, allowDirty, force, baseBranch, cmd.OutOrStdout())
 		},
 	}
 
 	cmd.Flags().Float64Var(&budgetUSD, "budget", 0, "budget in USD (defaults to config value)")
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "bypass the clean-working-tree check (recovery only)")
+	cmd.Flags().BoolVar(&force, "force", false, "replace an existing in-flight run (clobbers prior state)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch to branch from (default: auto-detect from repo)")
 	return cmd
 }
 
 // runAction starts a new project run via the engine's high-level StartRun entrypoint.
-func runAction(application *app.App, projectID, prompt string, budgetUSD float64, allowDirty bool, baseBranch string, w io.Writer) error {
+func runAction(application *app.App, projectID, prompt string, budgetUSD float64, allowDirty bool, force bool, baseBranch string, w io.Writer) error {
 	run, err := application.Engine.StartRun(engine.StartRunOptions{
 		ProjectID:  projectID,
 		Prompt:     prompt,
@@ -57,8 +64,17 @@ func runAction(application *app.App, projectID, prompt string, budgetUSD float64
 		BudgetUSD:  budgetUSD,
 		Source:     "cli",
 		AllowDirty: allowDirty,
+		Force:      force,
 	})
 	if err != nil {
+		var activeErr *engine.ActiveRunExistsError
+		if errors.As(err, &activeErr) {
+			return fmt.Errorf(
+				"a run already exists for this project: %s (%s).\n"+
+					"Cancel it with 'axiom cancel' or re-run with --force to replace it.\n"+
+					"Use 'axiom export' to inspect the existing run's state before deciding",
+				activeErr.RunID, activeErr.Status)
+		}
 		return fmt.Errorf("starting run: %w", err)
 	}
 

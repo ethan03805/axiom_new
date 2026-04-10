@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,6 +117,77 @@ func TestHandleGetStatus(t *testing.T) {
 	}
 	if resp.ProjectID != projID {
 		t.Errorf("project_id: got %q, want %q", resp.ProjectID, projID)
+	}
+}
+
+func TestHandleGetStatus_RedactsSecrets(t *testing.T) {
+	eng, db := testEngine(t)
+	projID, runID := seedProjectAndRun(t, db)
+
+	// Replace the seeded run's empty config snapshot with one that contains
+	// realistic secret material covering all redaction code paths:
+	//   - field name match (OpenRouterAPIKey, api_key, _token, _secret, password)
+	//   - value pattern match (raw `sk-or-v1-...` not under a "secret" key)
+	secretSnapshot := `{
+		"Inference": {"OpenRouterAPIKey": "sk-or-v1-TESTSECRET0123456789"},
+		"Nested": {
+			"api_key": "leaked-api-key-value",
+			"refresh_token": "leaked-token-value",
+			"shared_secret": "leaked-secret-value",
+			"password": "leaked-password-value",
+			"unrelated": "sk-or-v1-RAWTOKENVALUE",
+			"safe": "ordinary-value"
+		}
+	}`
+	if _, err := db.Exec(`UPDATE project_runs SET config_snapshot = ? WHERE id = ?`,
+		secretSnapshot, runID); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandlers(eng, db)
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+projID+"/status", nil)
+	rr := httptest.NewRecorder()
+	h.HandleGetStatus(rr, req, projID)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d; body: %s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+
+	// The plaintext secret material must be absent from the response.
+	forbidden := []string{
+		"sk-or-v1-TESTSECRET",
+		"TESTSECRET0123456789",
+		"leaked-api-key-value",
+		"leaked-token-value",
+		"leaked-secret-value",
+		"leaked-password-value",
+		"sk-or-v1-RAWTOKENVALUE",
+	}
+	for _, needle := range forbidden {
+		if strings.Contains(body, needle) {
+			t.Errorf("response leaked secret %q; body: %s", needle, body)
+		}
+	}
+
+	if !strings.Contains(body, "[REDACTED]") {
+		t.Errorf("expected response to contain [REDACTED]; body: %s", body)
+	}
+
+	// Sanity: non-secret values must still be present.
+	if !strings.Contains(body, "ordinary-value") {
+		t.Errorf("non-secret value was unexpectedly stripped; body: %s", body)
+	}
+
+	// The original projection (held by the engine path) must remain intact:
+	// redaction is a presentation concern only.
+	stored, err := db.GetRun(runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if !strings.Contains(stored.ConfigSnapshot, "sk-or-v1-TESTSECRET0123456789") {
+		t.Errorf("redaction must not modify stored config snapshot; got: %s", stored.ConfigSnapshot)
 	}
 }
 

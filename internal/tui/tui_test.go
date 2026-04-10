@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -439,6 +440,127 @@ func TestSubmitInput_UserMessage(t *testing.T) {
 	}
 	if run.Status != state.RunDraftSRS {
 		t.Errorf("run.Status = %q, want draft_srs", run.Status)
+	}
+}
+
+// --- GitHub #1 regression tests: shell-form command guard + active run refusal ---
+
+// TestSubmitInput_BootstrapMode_ShellLikePromptShowsHintFirst asserts
+// that a bootstrap-mode prompt whose first word matches a known axiom
+// subcommand does NOT immediately create a run on the first submit.
+// Instead the TUI must emit a "did you mean /<command>?" hint and
+// buffer the prompt; only a second Enter confirms the bootstrap start.
+// This protects users who were typing `axiom srs show` on the CLI and
+// naturally dropped the slash when they moved into the TUI.
+func TestSubmitInput_BootstrapMode_ShellLikePromptShowsHintFirst(t *testing.T) {
+	m, db, projID, _, _ := testSetupWithGit(t, &fakeGitService{})
+	m.width = 80
+	m.height = 24
+	m.handleStartupSummary()
+
+	// First submit: "srs show" should NOT create a run, should buffer
+	// the prompt, and should append a hint pointing at /srs show.
+	cmd := m.submitInput("srs show")
+	if cmd != nil {
+		t.Fatal("shell-like prompt should not dispatch a StartRun on first submit")
+	}
+	if m.pendingShellLikePrompt != "srs show" {
+		t.Errorf("pendingShellLikePrompt = %q, want %q", m.pendingShellLikePrompt, "srs show")
+	}
+	if _, err := db.GetActiveRun(projID); err == nil {
+		t.Error("shell-like prompt should not create a run on first submit")
+	}
+
+	foundHint := false
+	for _, entry := range m.transcript {
+		if strings.Contains(entry.Content, "looks like a shell command") &&
+			strings.Contains(entry.Content, "/srs") {
+			foundHint = true
+			break
+		}
+	}
+	if !foundHint {
+		t.Error("expected 'looks like a shell command' hint with /srs reference")
+	}
+
+	// Second submit of the same text: now it should actually start a
+	// run (user has acknowledged the hint and chosen to proceed).
+	cmd = m.submitInput("srs show")
+	if cmd == nil {
+		t.Fatal("second submit should dispatch a StartRun")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("StartRun cmd returned nil msg")
+	}
+	if m.pendingShellLikePrompt != "" {
+		t.Errorf("pendingShellLikePrompt should be cleared after confirmation, got %q",
+			m.pendingShellLikePrompt)
+	}
+}
+
+// TestSubmitInput_BootstrapMode_NormalPromptStartsImmediately
+// verifies the guard only triggers for known subcommands — a regular
+// prompt like "Build a REST API" must still start a run on the first
+// submit, with no extra confirmation step.
+func TestSubmitInput_BootstrapMode_NormalPromptStartsImmediately(t *testing.T) {
+	m, _, _, _, _ := testSetupWithGit(t, &fakeGitService{})
+	m.width = 80
+	m.height = 24
+	m.handleStartupSummary()
+
+	cmd := m.submitInput("Build a REST API with JWT auth")
+	if cmd == nil {
+		t.Fatal("normal prompt should start a run on first submit")
+	}
+	if m.pendingShellLikePrompt != "" {
+		t.Error("normal prompt should not arm the shell-like guard")
+	}
+}
+
+// TestSubmitInput_BootstrapMode_SurfacesActiveRunRefusal asserts that
+// when StartRun returns ActiveRunExistsError, the TUI surfaces a
+// message naming the existing run and pointing at /new / /resume —
+// and does NOT silently clobber the prior run. This exercises
+// startRunFromPrompt directly because seeding an active run puts the
+// session in execution mode rather than bootstrap.
+func TestSubmitInput_BootstrapMode_SurfacesActiveRunRefusal(t *testing.T) {
+	m, _, projID, _, _ := testSetupWithGit(t, &fakeGitService{})
+	m.width = 80
+	m.height = 24
+	existing := seedRunInStatus(t, m.engine, projID, state.RunActive)
+	m.handleStartupSummary()
+
+	// Call startRunFromPrompt directly — this is the code path that
+	// bootstrap-mode Enter would hit. The guard must refuse the call
+	// because an active run already exists.
+	cmd := m.startRunFromPrompt("another prompt")
+	msg := cmd()
+	failed, ok := msg.(runStartFailedMsg)
+	if !ok {
+		t.Fatalf("expected runStartFailedMsg, got %T", msg)
+	}
+	var activeErr *engine.ActiveRunExistsError
+	if !errors.As(failed.err, &activeErr) {
+		t.Fatalf("expected ActiveRunExistsError, got %T: %v", failed.err, failed.err)
+	}
+	if activeErr.RunID != existing.ID {
+		t.Errorf("ActiveRunExistsError.RunID = %q, want %q", activeErr.RunID, existing.ID)
+	}
+
+	// Feed the failure back through Update so the transcript picks
+	// up the specialised message.
+	m.Update(failed)
+	foundMsg := false
+	for _, entry := range m.transcript {
+		if strings.Contains(entry.Content, "already exists") &&
+			strings.Contains(entry.Content, existing.ID) &&
+			strings.Contains(entry.Content, "/new") {
+			foundMsg = true
+			break
+		}
+	}
+	if !foundMsg {
+		t.Error("expected transcript to name the existing run ID and /new instruction")
 	}
 }
 
